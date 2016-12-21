@@ -1,1 +1,1 @@
-from assemblyline.al.service.pefile.pefile import PEFile
+from al_services.alsvc_pefile.pefile import PEFile

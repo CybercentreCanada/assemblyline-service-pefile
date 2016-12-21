@@ -12,7 +12,7 @@ from assemblyline.common.hexdump import hexdump
 from assemblyline.al.common.result import Result, ResultSection
 from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
 from assemblyline.al.service.base import ServiceBase
-from assemblyline.al.service.pefile.LCID import LCID as G_LCID
+from al_services.alsvc_pefile.LCID import LCID as G_LCID
 
 
 # Some legacy stubs
