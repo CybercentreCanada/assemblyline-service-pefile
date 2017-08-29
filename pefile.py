@@ -37,7 +37,7 @@ class PEFile(ServiceBase):
     SERVICE_DESCRIPTION = "This service extracts imports, exports, section names, ... " \
                           "from windows PE files using the python library pefile."
     SERVICE_ENABLED = True
-    SERVICE_REVISION = ServiceBase.parse_revision('$Id: f66e86de83f3caf66fdeb1e2b7bf76c5a93fc0b2 $')
+    SERVICE_REVISION = ServiceBase.parse_revision('$Id$')
     SERVICE_VERSION = '1'
     SERVICE_CPU_CORES = 0.2
     SERVICE_RAM_MB = 256
