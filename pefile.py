@@ -27,7 +27,10 @@ def res_txt_tag(value, tag, style=None, link=None, alt_text=None):
 
 
 def make_tag(res, ttype, tag, weight, usage):
-    t = str(tag)
+    try:
+        t = str(tag)
+    except:
+        return
     if 1 < len(t) < 1001:
         res.add_tag(TAG_TYPE[ttype], t, TAG_WEIGHT[weight], usage=usage)
     return
