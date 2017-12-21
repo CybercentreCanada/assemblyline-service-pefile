@@ -26,6 +26,16 @@ def res_txt_tag(value, tag, style=None, link=None, alt_text=None):
     return value
 
 
+def make_tag(res, ttype, tag, weight, usage):
+    try:
+        t = str(tag)
+    except:
+        return
+    if 1 < len(t) < 1001:
+        res.add_tag(TAG_TYPE[ttype], t, TAG_WEIGHT[weight], usage=usage)
+    return
+
+
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
 
@@ -148,11 +158,7 @@ class PEFile(ServiceBase):
                        res_txt_tag(sec_md5, TAG_TYPE['PE_SECTION_HASH']),
                        " - entropy:%f (min:0.0, Max=8.0)" % sec_entropy]
                 # add a search tag for the Section Hash
-                self.file_res.add_tag(TAG_TYPE['PE_SECTION_HASH'],
-                                      "%s" % sec_md5,
-                                      TAG_WEIGHT['HIGH'],
-                                      usage='CORRELATION')
-
+                make_tag(self.file_res, 'PE_SECTION_HASH', sec_md5, 'HIGH', usage='CORRELATION')
                 pe_sec_res.add_line(txt)
 
         except AttributeError:
@@ -229,7 +235,6 @@ class PEFile(ServiceBase):
                     pe_export_res.add_line(["Module Name: ",
                                             res_txt_tag(safe_str(self.pe_file.ModuleName),
                                                         TAG_TYPE['PE_EXPORT_MODULE_NAME'])])
-
                 except:
                     pass
 
@@ -298,10 +303,8 @@ class PEFile(ServiceBase):
                             line.append(res_txt_tag("%04X" % language.id, TAG_TYPE['PE_RESOURCE_LANGUAGE']))
                             line.append(" (%s)" % language_desc)
 
-                            self.file_res.add_tag(TAG_TYPE['PE_RESOURCE_LANGUAGE'],
-                                                  "%04X" % language.id,
-                                                  TAG_WEIGHT['LOW'],
-                                                  usage='IDENTIFICATION')
+                            make_tag(self.file_res, 'PE_RESOURCE_LANGUAGE', language.id,
+                                     weight='LOW', usage='IDENTIFICATION')
 
                             # get the size of the resource
                             res_size = language.data.struct.Size
@@ -549,8 +552,10 @@ class PEFile(ServiceBase):
                                                  res_txt_tag(tag_value, TAG_TYPE['FILE_STRING'])])
                                         else:
                                             res.add_line(res_txt_tag(tag_value, TAG_TYPE['FILE_STRING']))
-                                        self.file_res.add_tag(TAG_TYPE['FILE_STRING'], tag_value, TAG_WEIGHT['NULL'],
-                                                              usage='IDENTIFICATION')
+
+                                        make_tag(self.file_res, 'FILE_STRING', tag_value, weight='NULL',
+                                                 usage='IDENTIFICATION')
+
                                         success = True
                                     except:
                                         pass
@@ -630,17 +635,15 @@ class PEFile(ServiceBase):
 
     def auto_generate_tags(self, file_res):
 
-        # noinspection PyBroadException
         try:
-            file_res.add_tag(TAG_TYPE['FILE_NAME'], "%s" % self.pe_file.ModuleName, TAG_WEIGHT['MED'],
-                             usage="CORRELATION")
-            file_res.add_tag(TAG_TYPE['PE_EXPORT_MODULE_NAME'], "%s" % self.pe_file.ModuleName, TAG_WEIGHT['HIGH'],
-                             usage="CORRELATION")
+            make_tag(file_res, 'FILE_NAME', self.pe_file.ModuleName, weight='MED', usage="CORRELATION")
+
+            make_tag(file_res, 'PE_EXPORT_MODULE_NAME', self.pe_file.ModuleName, weight='HIGH', usage="CORRELATION")
         except:
             pass
 
-        file_res.add_tag(TAG_TYPE['PE_LINK_TIME_STAMP'], "%s" % self.pe_file.FILE_HEADER.TimeDateStamp,
-                         TAG_WEIGHT['HIGH'], usage="CORRELATION")
+        make_tag(file_res, 'PE_LINK_TIME_STAMP', self.pe_file.FILE_HEADER.TimeDateStamp, weight='HIGH',
+                 usage="CORRELATION")
         try:
             # When it is a unicode, we know we are coming from RSDS which is UTF-8
             # otherwise, we come from NB10 and we need to guess the charset.
@@ -650,42 +653,38 @@ class PEFile(ServiceBase):
             else:
                 pdb_filename = self.pe_file.pdb_filename
 
-            file_res.add_tag(TAG_TYPE['PE_PDB_FILENAME'], pdb_filename, TAG_WEIGHT['HIGH'],
-                             usage="CORRELATION")
+            make_tag(file_res, 'PE_PDB_FILENAME', pdb_filename, weight='HIGH', usage="CORRELATION")
         except AttributeError:
             pass
 
         try:
             if len(self.pe_file.OriginalFilename) > 0:
-                file_res.add_tag(TAG_TYPE['PE_VERSION_INFO_ORIGINAL_FILENAME'], self.pe_file.OriginalFilename,
-                                 TAG_WEIGHT['HIGH'], usage="CORRELATION")
+                make_tag(file_res, 'PE_VERSION_INFO_ORIGINAL_FILENAME', self.pe_file.OriginalFilename, weight='HIGH',
+                         usage="CORRELATION")
         except AttributeError:
             pass
 
         try:
             if len(self.pe_file.FileDescription) > 0:
-                file_res.add_tag(TAG_TYPE['PE_VERSION_INFO_FILE_DESCRIPTION'], self.pe_file.FileDescription,
-                                 TAG_WEIGHT['HIGH'], usage="CORRELATION")
+                make_tag(file_res, 'PE_VERSION_INFO_FILE_DESCRIPTION', self.pe_file.FileDescription, weight='HIGH',
+                         usage="CORRELATION")
         except AttributeError:
             pass
 
         # We have always been sorting them and storing the sorted hash, but we have added
         # unsorted MD5-hash (which is provided by PEFILE) so this has been renamed
         if self.get_import_hash() is not None:
-            file_res.add_tag(TAG_TYPE['PE_IMPORT_SORTED_SHA1'], self.get_import_hash(), TAG_WEIGHT['HIGH'],
-                             usage="CORRELATION")
+            make_tag(file_res, 'PE_IMPORT_SORTED_SHA1', self.get_import_hash(), weight='HIGH', usage="CORRELATION")
 
         imphash = self.get_imphash()
         if imphash != '':
-            file_res.add_tag(TAG_TYPE['PE_IMPORT_MD5'], imphash, TAG_WEIGHT['HIGH'],
-                             usage="CORRELATION")
+            make_tag(file_res, 'PE_IMPORT_MD5', imphash, weight='HIGH', usage="CORRELATION")
 
         try:
             if self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp:
                 for exp in self.pe_file.DIRECTORY_ENTRY_EXPORT.symbols:
                     if exp.name is not None:
-                        file_res.add_tag(TAG_TYPE['PE_EXPORT_FCT_NAME'], exp.name, TAG_WEIGHT['HIGH'],
-                                         usage="CORRELATION")
+                        make_tag(file_res, 'PE_EXPORT_FCT_NAME', exp.name, weight='HIGH', usage="CORRELATION")
         except AttributeError:
             pass
 
@@ -693,13 +692,11 @@ class PEFile(ServiceBase):
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
                 for res_entry in self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries:
                     if res_entry.name is not None:
-                        file_res.add_tag(TAG_TYPE['PE_RESOURCE_NAME'], "%s" % res_entry.name, TAG_WEIGHT['HIGH'],
-                                         usage="CORRELATION")
+                        make_tag(file_res, 'PE_RESOURCE_NAME', res_entry.name, weight='HIGH', usage="CORRELATION")
 
                     for name_id in res_entry.directory.entries:
                         if name_id.name is not None:
-                            file_res.add_tag(TAG_TYPE['PE_RESOURCE_NAME'], "%s" % name_id.name, TAG_WEIGHT['HIGH'],
-                                             usage="CORRELATION")
+                            make_tag(file_res, 'PE_RESOURCE_NAME', name_id.name, weight='HIGH', usage="CORRELATION")
         except AttributeError:
             pass
 
