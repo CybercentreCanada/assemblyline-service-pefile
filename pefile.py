@@ -40,8 +40,10 @@ PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
 
 class PEFile(ServiceBase):
-    """ This services dumps the PE header, looks up the PeID database and attempt to find
-    some anomalies which could indicate that they are malware related. """
+    """ This services dumps the PE header and attempts to find
+    some anomalies which could indicate that they are malware related.
+
+    PEiD signature style searching should be done using the yara service"""
     SERVICE_ACCEPTS = 'executable/windows'
     SERVICE_CATEGORY = "Static Analysis"
     SERVICE_DESCRIPTION = "This service extracts imports, exports, section names, ... " \
@@ -74,27 +76,8 @@ class PEFile(ServiceBase):
         self.request = None
         self.path = None
 
-    # TODO: We can probably call PEFile's get_imphash.
     def get_imphash(self):
-        impstrs = []
-        exts = ['ocx', 'sys', 'dll']
-        if not hasattr(self.pe_file, "DIRECTORY_ENTRY_IMPORT"):
-            return ""
-        for entry in self.pe_file.DIRECTORY_ENTRY_IMPORT:
-            libname = entry.dll.lower()
-            parts = libname.rsplit('.', 1)
-            if len(parts) > 1 and parts[1] in exts:
-                libname = parts[0]
-
-            for imp in entry.imports:
-                funcname = imp.name or str(imp.ordinal)
-
-                if not funcname:
-                    continue
-
-                impstrs.append('%s.%s' % (libname.lower(), funcname.lower()))
-
-        return hashlib.md5(','.join(impstrs)).hexdigest()
+        return self.pe_file.get_imphash()
 
     # noinspection PyPep8Naming
     def get_pe_info(self, lcid):
@@ -327,16 +310,17 @@ class PEFile(ServiceBase):
                         self.file_res.add_section(pe_resource_verinfo_res)
 
                         try:
-                            if hasattr(file_info.StringTable[0], "LangID"):
-                                if not int(file_info.StringTable[0].LangID, 16) >> 16 == 0:
-                                    txt = ('LangId: ' + file_info.StringTable[0].LangID + " (" + lcid[
-                                        int(file_info.StringTable[0].LangID, 16) >> 16] + ")")
+                            if "LangID" in file_info.StringTable[0].entries:
+                                lang_id = file_info.StringTable[0].get("LangID")
+                                if not int(lang_id, 16) >> 16 == 0:
+                                    txt = ('LangId: ' + lang_id + " (" + lcid[
+                                        int(lang_id, 16) >> 16] + ")")
                                     pe_resource_verinfo_res.add_line(txt)
                                 else:
-                                    txt = ('LangId: ' + file_info.StringTable[0].LangID + " (NEUTRAL)")
+                                    txt = ('LangId: ' + lang_id + " (NEUTRAL)")
                                     pe_resource_verinfo_res.add_line(txt)
                         except (ValueError, KeyError):
-                            txt = ('LangId: %s is invalid' % file_info.StringTable[0].LangID)
+                            txt = ('LangId: %s is invalid' % lang_id)
                             pe_resource_verinfo_res.add_line(txt)
 
                         for entry in file_info.StringTable[0].entries.items():
