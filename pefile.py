@@ -6,6 +6,11 @@ import chardet
 import os
 import time
 from cStringIO import StringIO
+from _io import BytesIO
+import binascii
+from pyasn1.codec.der import encoder as der_encoder
+import json
+import pprint
 
 from assemblyline.common.charset import safe_str, translate_str
 from assemblyline.common.hexdump import hexdump
@@ -58,6 +63,12 @@ class PEFile(ServiceBase):
     def import_service_deps(self):
         global pefile
         import pefile
+
+        global fingerprint, dn, auth_data, PecoffBlob
+        from verifysigs.utils import fingerprint
+        from verifysigs.asn1utils import dn
+        from verifysigs.utils import auth_data
+        from verifysigs.utils.pecoff_blob import PecoffBlob
 
     def __init__(self, cfg=None):
         super(PEFile, self).__init__(cfg)
@@ -748,3 +759,174 @@ class PEFile(ServiceBase):
 
             # Here is general PE info
             self.get_pe_info(G_LCID)
+
+            file_io = BytesIO(file_content)
+            extracted_data = self.extract_sigs(file_io)
+
+            pprint.pprint(extracted_data)
+
+    # This is largely based on extract_auth_data from https://github.com/sebdraven/verify-sigs
+    def extract_sigs(self, file_obj):
+
+        log = self.log.getChild("extract_sigs")
+
+        map_result_ret = {'pecoff hashes': {
+
+        },
+            'sigs': []
+            # 'CounterSignature': {
+            #
+            # },
+            # 'CertChains': {},
+            # 'Certificates': {},
+        }
+
+        fingerprinter = fingerprint.Fingerprinter(file_obj)
+        is_pecoff = fingerprinter.EvalPecoff()
+        fingerprinter.EvalGeneric()
+        results = fingerprinter.HashIt()
+
+        # print('Generic hashes:')
+        # hashes = [x for x in results if x['name'] == 'generic']
+        # if len(hashes) > 1:
+        #     log.info('More than one generic fingerprint? Only printing first one.')
+        # for hname in sorted(hashes[0].keys()):
+        #     if hname != 'name':
+        #         # print('%s: %s' % (hname, binascii.b2a_hex(hashes[0][hname]).decode()))
+        #         map_result["pecoff hashes"][hname] = binascii.b2a_hex(hashes[0][hname]).decode()
+
+        if not is_pecoff:
+            log.error('This is not a PE/COFF binary. Exiting.')
+            return
+
+        # print('PE/COFF hashes:')
+        hashes = [x for x in results if x['name'] == 'pecoff']
+        if len(hashes) > 1:
+            log.debug('More than one PE/COFF finger? Only printing first one.')
+        for hname in sorted(hashes[0].keys()):
+            if hname != 'name' and hname != 'SignedData':
+                map_result_ret['pecoff hashes'][hname] = binascii.b2a_hex(hashes[0][hname]).decode()
+                # print('%s: %s' % (hname, binascii.b2a_hex(hashes[0][hname]).decode()))
+        # print
+
+        signed_pecoffs = [x for x in results if x['name'] == 'pecoff' and
+                          'SignedData' in x]
+
+        # if not signed_pecoffs:
+        #     print('This PE/COFF binary has no signature. Exiting.')
+        #     return
+
+        # signed_pecoff = signed_pecoffs[0]
+
+        for signed_pecoff in signed_pecoffs:
+
+            signed_datas = signed_pecoff['SignedData']
+            # There may be multiple of these, if the windows binary was signed multiple
+            # times, e.g. by different entities. Each of them adds a complete SignedData
+            # blob to the binary.
+            # TODO(user): Process all instances
+            # signed_data = signed_datas[0]
+
+            for signed_data in signed_datas:
+                map_result = {
+                    'CounterSignature': {
+
+                    },
+                    'CertChains': {},
+                    'Certificates': {},
+                }
+                blob = PecoffBlob(signed_data)
+
+                auth = auth_data.AuthData(blob.getcertificateblob())
+                content_hasher_name = auth.digest_algorithm().name
+                computed_content_hash = signed_pecoff[content_hasher_name]
+
+                try:
+                    auth.validateasn1()
+                    auth.validatehashes(computed_content_hash)
+                    auth.validatesignatures()
+                    auth.validatecertchains(time.gmtime())
+                except auth_data.Asn1Error:
+                    if auth.openssl_error:
+                        log.error('OpenSSL Errors:\n%s' % auth.openssl_error)
+
+                    # TODO: add a result section or something indicating that a sig was found but not valid
+                    # raise
+
+                # print('Program: %s, URL: %s' % (auth.program_name, auth.program_url))
+                if auth.has_countersignature:
+                    map_result['CounterSignature']['isPresent'] = True
+                    # print('Countersignature is present. Timestamp: %s UTC' %
+                    #       time.asctime(time.gmtime(auth.counter_timestamp)))
+                    map_result['CounterSignature']['Timestamp'] = time.asctime(time.gmtime(auth.counter_timestamp))
+                else:
+                    # print('Countersignature is not present.')
+                    map_result['CounterSignature']['isPresent'] = False
+
+                # print('Binary is signed with cert issued by:')
+                # pprint.pprint(auth.signing_cert_id)
+
+                map_result['signing_cert_id'] = json.loads(auth.signing_cert_id[0].replace('\'', '"'))
+                # print
+
+                # print('Cert chain head issued by:')
+                # pprint.pprint(auth.cert_chain_head[2])
+                map_result['CertChains']['head'] = json.loads(auth.cert_chain_head[2][0].replace('\'', '"'))
+                # print('  Chain not before: %s UTC' %
+                #       (time.asctime(time.gmtime(auth.cert_chain_head[0]))))
+                map_result['CertChains']['Before'] = time.asctime(time.gmtime(auth.cert_chain_head[0]))
+                # print('  Chain not after: %s UTC' %
+                #       (time.asctime(time.gmtime(auth.cert_chain_head[1]))))
+                map_result['CertChains']['After'] = time.asctime(time.gmtime(auth.cert_chain_head[1]))
+                # print
+
+                if auth.has_countersignature:
+                    # print('Countersig chain head issued by:')
+                    map_result['CounterSignature']['Chain'] = {}
+                    # pprint.pprint(auth.counter_chain_head[2])
+                    map_result['CounterSignature']['Chain']['head'] = json.loads(
+                        auth.counter_chain_head[2][0].replace('\'', '"'))
+                    # print('  Countersig not before: %s UTC' %
+                    #       (time.asctime(time.gmtime(auth.counter_chain_head[0]))))
+                    map_result['CounterSignature']['Chain']['Before'] = time.asctime(time.gmtime(auth.counter_chain_head[0]))
+                    # print('  Countersig not after: %s UTC' %
+                    #       (time.asctime(time.gmtime(auth.counter_chain_head[1]))))
+                    map_result['CounterSignature']['Chain']['After'] = time.asctime(time.gmtime(auth.counter_chain_head[1]))
+                    # print
+
+                # print('Certificates')
+                for (issuer, serial), cert in auth.certificates.items():
+                    # print('  Issuer: %s' % issuer)
+                    # print('  Serial: %s' % serial)
+                    map_result['Certificates'][serial] = {
+                        'Issuer': json.loads(issuer.replace('\'', '"'))
+                    }
+                    subject = cert[0][0]['subject']
+                    subject_dn = str(dn.DistinguishedName.TraverseRdn(subject[0]))
+                    # print('  Subject: %s' % subject_dn)
+                    map_result['Certificates'][serial]['Subject'] = json.loads(subject_dn.replace('\'', '"'))
+                    not_before = cert[0][0]['validity']['notBefore']
+                    not_after = cert[0][0]['validity']['notAfter']
+                    not_before_time = not_before.ToPythonEpochTime()
+                    not_after_time = not_after.ToPythonEpochTime()
+                    # print('  Not Before: %s UTC (%s)' %
+                    #       (time.asctime(time.gmtime(not_before_time)), not_before[0]))
+
+                    map_result['Certificates'][serial]['Before'] = time.asctime(time.gmtime(not_before_time))
+                    # print('  Not After: %s UTC (%s)' %
+                    #       (time.asctime(time.gmtime(not_after_time)), not_after[0]))
+                    map_result['Certificates'][serial]['After'] = time.asctime(time.gmtime(not_after_time))
+                    bin_cert = der_encoder.encode(cert)
+                    # print('  MD5: %s' % hashlib.md5(bin_cert).hexdigest())
+                    # print('  SHA1: %s' % hashlib.sha1(bin_cert).hexdigest())
+                    map_result['Certificates'][serial]['MD5'] = hashlib.md5(bin_cert).hexdigest()
+                    map_result['Certificates'][serial]['SHA1'] = hashlib.sha1(bin_cert).hexdigest()
+                    # print
+
+                if auth.trailing_data:
+                    log.error('Signature Blob had trailing (unvalidated) data (%d bytes): %s' %
+                          (len(auth.trailing_data), binascii.hexlify(auth.trailing_data)))
+
+                map_result_ret["sigs"].append(map_result)
+
+        return map_result_ret
