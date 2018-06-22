@@ -18,6 +18,7 @@ from assemblyline.al.common.result import Result, ResultSection
 from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
+import logging
 
 
 # Some legacy stubs
@@ -766,9 +767,13 @@ class PEFile(ServiceBase):
             pprint.pprint(extracted_data)
 
     # This is largely based on extract_auth_data from https://github.com/sebdraven/verify-sigs
-    def extract_sigs(self, file_obj):
+    @staticmethod
+    def extract_sigs(file_obj, logger = None):
 
-        log = self.log.getChild("extract_sigs")
+        if logger:
+            log = logger.getChild("extract_sigs")
+        else:
+            log = logging.getLogger("extract_sigs")
 
         map_result_ret = {'pecoff hashes': {
 
@@ -821,11 +826,6 @@ class PEFile(ServiceBase):
         for signed_pecoff in signed_pecoffs:
 
             signed_datas = signed_pecoff['SignedData']
-            # There may be multiple of these, if the windows binary was signed multiple
-            # times, e.g. by different entities. Each of them adds a complete SignedData
-            # blob to the binary.
-            # TODO(user): Process all instances
-            # signed_data = signed_datas[0]
 
             for signed_data in signed_datas:
                 map_result = {
@@ -843,6 +843,7 @@ class PEFile(ServiceBase):
 
                 try:
                     auth.validateasn1()
+                    # TODO: need try/except around validate hashes - probably try/except around each of these?
                     auth.validatehashes(computed_content_hash)
                     auth.validatesignatures()
                     auth.validatecertchains(time.gmtime())
