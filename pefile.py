@@ -11,14 +11,16 @@ import binascii
 from pyasn1.codec.der import encoder as der_encoder
 import json
 import pprint
+import logging
+import traceback
 
 from assemblyline.common.charset import safe_str, translate_str
 from assemblyline.common.hexdump import hexdump
 from assemblyline.al.common.result import Result, ResultSection
-from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
+from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT, TAG_USAGE
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
-import logging
+
 
 
 # Some legacy stubs
@@ -762,7 +764,78 @@ class PEFile(ServiceBase):
             self.get_pe_info(G_LCID)
 
             file_io = BytesIO(file_content)
-            extracted_data = self.extract_sigs(file_io)
+
+            extracted_data = None
+            try:
+                extracted_data = PEFile.extract_sigs(file_io)
+            except Exception as e:
+                res = ResultSection(SCORE.NULL, "Error trying to check for PE signatures")
+                res.add_line("Traceback:")
+                res.add_lines(traceback.format_exc().splitlines())
+
+                msg = e.message
+                # TODO: could extend this to deal with other types of exception messages
+                if msg == "1: Validation of content hash failed.":
+                    # TODO: add heuristc for this?
+
+                    # Add a subsection with an actual score here
+                    res.add_section(ResultSection(SCORE.MED,
+                                                  "PE content hash doesn't match signature. "
+                                                  "Signature was probably copied from another PE"))
+
+                self.file_res.add_section(res)
+
+            if extracted_data:
+                if "sigs" in extracted_data:
+                    if len(extracted_data["sigs"]) > 0:
+                        res = ResultSection(SCORE.NULL, "Found signature data")
+                        # found some signature data
+                        for sig in extracted_data["sigs"]:
+                            if "CounterSignature" in sig:
+                                if not sig["CounterSignature"]["isPresent"]:
+                                    res.add_section(ResultSection(SCORE.MED,
+                                                                  "No counter signature. PE appears to be self-signed"))
+                                else:
+                                    res.add_section(ResultSection(SCORE.OK,
+                                                                  "Counter signature found, appears to be legitimately signed"))
+                            if "Certificates" in sig:
+                                for cert_serial, cert in sig["Certificates"].iteritems():
+
+                                    res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert_serial), TAG_WEIGHT.SURE,
+                                                usage=TAG_USAGE.CORRELATION)
+
+                                    if "Before" in cert:
+                                        res.add_tag(TAG_TYPE.CERT_VALID_TO, cert["Before"], TAG_WEIGHT.SURE,
+                                                    usage=TAG_USAGE.CORRELATION)
+                                    if "After" in cert:
+                                        res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert["After"], TAG_WEIGHT.SURE,
+                                                    usage=TAG_USAGE.CORRELATION)
+                                    if "Issuer" in cert:
+                                        # TODO: need to normalize this
+                                        res.add_tag(TAG_TYPE.CERT_ISSUER, str(cert["Issuer"]), TAG_WEIGHT.SURE,
+                                                    usage=TAG_USAGE.CORRELATION)
+                                    if "Subject" in cert:
+                                        # TODO: need to normalize
+                                        res.add_tag(TAG_TYPE.CERT_SUBJECT, str(cert["Subject"]), TAG_WEIGHT.SURE,
+                                                    usage=TAG_USAGE.CORRELATION)
+
+                                    # TODO: Check before/after against link timestamp
+
+                                    # TODO: add tags for cert data:
+                                    # ('CERT_VERSION', 230),
+                                    # ('CERT_SERIAL_NO', 231),
+                                    # ('CERT_SIGNATURE_ALGO', 232),
+                                    # ('CERT_ISSUER', 233),
+                                    # ('CERT_VALID_FROM', 234),
+                                    # ('CERT_VALID_TO', 235),
+                                    # ('CERT_SUBJECT', 236),
+                                    # ('CERT_KEY_USAGE', 237),
+                                    # ('CERT_EXTENDED_KEY_USAGE', 238),
+                                    # ('CERT_SUBJECT_ALT_NAME', 239),
+                                    # ('CERT_THUMBPRINT', 240),
+
+                        self.file_res.add_section(res)
+
 
             pprint.pprint(extracted_data)
 
@@ -791,15 +864,6 @@ class PEFile(ServiceBase):
         fingerprinter.EvalGeneric()
         results = fingerprinter.HashIt()
 
-        # print('Generic hashes:')
-        # hashes = [x for x in results if x['name'] == 'generic']
-        # if len(hashes) > 1:
-        #     log.info('More than one generic fingerprint? Only printing first one.')
-        # for hname in sorted(hashes[0].keys()):
-        #     if hname != 'name':
-        #         # print('%s: %s' % (hname, binascii.b2a_hex(hashes[0][hname]).decode()))
-        #         map_result["pecoff hashes"][hname] = binascii.b2a_hex(hashes[0][hname]).decode()
-
         if not is_pecoff:
             log.error('This is not a PE/COFF binary. Exiting.')
             return
@@ -811,17 +875,9 @@ class PEFile(ServiceBase):
         for hname in sorted(hashes[0].keys()):
             if hname != 'name' and hname != 'SignedData':
                 map_result_ret['pecoff hashes'][hname] = binascii.b2a_hex(hashes[0][hname]).decode()
-                # print('%s: %s' % (hname, binascii.b2a_hex(hashes[0][hname]).decode()))
-        # print
 
         signed_pecoffs = [x for x in results if x['name'] == 'pecoff' and
                           'SignedData' in x]
-
-        # if not signed_pecoffs:
-        #     print('This PE/COFF binary has no signature. Exiting.')
-        #     return
-
-        # signed_pecoff = signed_pecoffs[0]
 
         for signed_pecoff in signed_pecoffs:
 
@@ -843,7 +899,6 @@ class PEFile(ServiceBase):
 
                 try:
                     auth.validateasn1()
-                    # TODO: need try/except around validate hashes - probably try/except around each of these?
                     auth.validatehashes(computed_content_hash)
                     auth.validatesignatures()
                     auth.validatecertchains(time.gmtime())
@@ -851,8 +906,8 @@ class PEFile(ServiceBase):
                     if auth.openssl_error:
                         log.error('OpenSSL Errors:\n%s' % auth.openssl_error)
 
-                    # TODO: add a result section or something indicating that a sig was found but not valid
-                    # raise
+                    log.error("Error parsing signature, raising exception")
+                    raise
 
                 # print('Program: %s, URL: %s' % (auth.program_name, auth.program_url))
                 if auth.has_countersignature:
@@ -931,3 +986,29 @@ class PEFile(ServiceBase):
                 map_result_ret["sigs"].append(map_result)
 
         return map_result_ret
+
+
+if __name__ == "__main__":
+
+    from verifysigs.utils import fingerprint
+    from verifysigs.asn1utils import dn
+    from verifysigs.utils import auth_data
+    from verifysigs.utils.pecoff_blob import PecoffBlob
+
+    import sys
+
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)s %(message)s')
+
+    file_io = BytesIO(open(sys.argv[1],"rb").read())
+    try:
+        extracted_data = PEFile.extract_sigs(file_io)
+    except Exception as e:
+        print "Exception parsing data"
+        traceback.print_exc()
+        msg = e.message
+        # TODO: could extend this to deal with various types of exception messages
+        if msg == "1: Validation of content hash failed.":
+            print "PE content hash doesn't match signature. Signature was probably copied from another PE"
+
+    pprint.pprint(extracted_data)
