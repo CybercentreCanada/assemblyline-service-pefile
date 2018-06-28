@@ -922,6 +922,9 @@ class PEFile(ServiceBase):
                 # print('Binary is signed with cert issued by:')
                 # pprint.pprint(auth.signing_cert_id)
 
+                print "===="
+                print auth.signing_cert_id[0]
+                print type(auth.signing_cert_id[0])
                 map_result['signing_cert_id'] = json.loads(auth.signing_cert_id[0].replace('\'', '"'))
                 # print
 
@@ -959,6 +962,9 @@ class PEFile(ServiceBase):
                     }
                     subject = cert[0][0]['subject']
                     subject_dn = str(dn.DistinguishedName.TraverseRdn(subject[0]))
+                    print "============="
+                    print subject_dn
+                    print "==========="
                     # print('  Subject: %s' % subject_dn)
                     map_result['Certificates'][serial]['Subject'] = json.loads(subject_dn.replace('\'', '"'))
                     not_before = cert[0][0]['validity']['notBefore']
