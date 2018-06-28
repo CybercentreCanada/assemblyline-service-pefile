@@ -67,11 +67,14 @@ class PEFile(ServiceBase):
         global pefile
         import pefile
 
-        global fingerprint, dn, auth_data, PecoffBlob
-        from verifysigs.utils import fingerprint
-        from verifysigs.asn1utils import dn
-        from verifysigs.utils import auth_data
-        from verifysigs.utils.pecoff_blob import PecoffBlob
+        try:
+            global signed_pe, signify
+            from signify import signed_pe
+            import signify
+            self.use_signify = True
+        except ImportError:
+            self.log.warning("signify package not installed (unable to import). Reinstall the PEFile service with "
+                             "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
 
     def __init__(self, cfg=None):
         super(PEFile, self).__init__(cfg)
@@ -89,6 +92,7 @@ class PEFile(ServiceBase):
         self.patch_section = None
         self.request = None
         self.path = None
+        self.use_signify = False
 
     def get_imphash(self):
         return self.pe_file.get_imphash()
@@ -785,236 +789,62 @@ class PEFile(ServiceBase):
 
                 self.file_res.add_section(res)
 
-            if extracted_data:
-                if "sigs" in extracted_data:
-                    if len(extracted_data["sigs"]) > 0:
-                        res = ResultSection(SCORE.NULL, "Found signature data")
-                        # found some signature data
-                        for sig in extracted_data["sigs"]:
-                            if "CounterSignature" in sig:
-                                if not sig["CounterSignature"]["isPresent"]:
-                                    res.add_section(ResultSection(SCORE.MED,
-                                                                  "No counter signature. PE appears to be self-signed"))
-                                else:
-                                    res.add_section(ResultSection(SCORE.OK,
-                                                                  "Counter signature found, appears to be legitimately signed"))
-                            if "Certificates" in sig:
-                                for cert_serial, cert in sig["Certificates"].iteritems():
-
-                                    res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert_serial), TAG_WEIGHT.SURE,
-                                                usage=TAG_USAGE.CORRELATION)
-
-                                    if "Before" in cert:
-                                        res.add_tag(TAG_TYPE.CERT_VALID_TO, cert["Before"], TAG_WEIGHT.SURE,
-                                                    usage=TAG_USAGE.CORRELATION)
-                                    if "After" in cert:
-                                        res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert["After"], TAG_WEIGHT.SURE,
-                                                    usage=TAG_USAGE.CORRELATION)
-                                    if "Issuer" in cert:
-                                        # TODO: need to normalize this
-                                        res.add_tag(TAG_TYPE.CERT_ISSUER, str(cert["Issuer"]), TAG_WEIGHT.SURE,
-                                                    usage=TAG_USAGE.CORRELATION)
-                                    if "Subject" in cert:
-                                        # TODO: need to normalize
-                                        res.add_tag(TAG_TYPE.CERT_SUBJECT, str(cert["Subject"]), TAG_WEIGHT.SURE,
-                                                    usage=TAG_USAGE.CORRELATION)
-
-                                    # TODO: Check before/after against link timestamp
-
-                                    # TODO: add tags for cert data:
-                                    # ('CERT_VERSION', 230),
-                                    # ('CERT_SERIAL_NO', 231),
-                                    # ('CERT_SIGNATURE_ALGO', 232),
-                                    # ('CERT_ISSUER', 233),
-                                    # ('CERT_VALID_FROM', 234),
-                                    # ('CERT_VALID_TO', 235),
-                                    # ('CERT_SUBJECT', 236),
-                                    # ('CERT_KEY_USAGE', 237),
-                                    # ('CERT_EXTENDED_KEY_USAGE', 238),
-                                    # ('CERT_SUBJECT_ALT_NAME', 239),
-                                    # ('CERT_THUMBPRINT', 240),
-
-                        self.file_res.add_section(res)
-
-
-            pprint.pprint(extracted_data)
-
-    # This is largely based on extract_auth_data from https://github.com/sebdraven/verify-sigs
     @staticmethod
-    def extract_sigs(file_obj, logger = None):
+    def get_signify(file_handle, file_res, log = None):
 
-        if logger:
-            log = logger.getChild("extract_sigs")
+        if log == None:
+            log = logging.getLogger("get_signify")
         else:
-            log = logging.getLogger("extract_sigs")
+            log = log.getChild("get_signify")
 
-        map_result_ret = {'pecoff hashes': {
+        # first, let's try parsing the file
+        try:
+            s_data = signed_pe.SignedPEFile(file_handle)
+        except Exception as e:
+            log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
 
-        },
-            'sigs': []
-            # 'CounterSignature': {
-            #
-            # },
-            # 'CertChains': {},
-            # 'Certificates': {},
-        }
+        # Now try checking for verification
+        try:
+            s_data.verify()
+        except signify.exceptions.SignedPEParseError as e:
+            if e.message == "The PE file does not contain a certificate table.":
+                res.add_section(ResultSection(SCORE.NULL, "No file signature data found"))
+                pass
+            else:
+                # unknown exception?
+        # TODO: catch signify.exceptions.AuthenticodeVerificationError: The expected hash does not match the digest in SpcInfo
+        # for copied signature
 
-        fingerprinter = fingerprint.Fingerprinter(file_obj)
-        is_pecoff = fingerprinter.EvalPecoff()
-        fingerprinter.EvalGeneric()
-        results = fingerprinter.HashIt()
+        # catch signify.exceptions.VerificationError: Chain verification from CN=Sample.CodeSigning(serial:-63544756664968372297155069096308826323) failed: Unable to build a validation path for the certificate "Common Name: Sample.CodeSigning" - no issuer matching "Common Name: Sample.CA" was found
+        # for self signed signature
 
-        if not is_pecoff:
-            log.error('This is not a PE/COFF binary. Exiting.')
-            return
-
-        # print('PE/COFF hashes:')
-        hashes = [x for x in results if x['name'] == 'pecoff']
-        if len(hashes) > 1:
-            log.debug('More than one PE/COFF finger? Only printing first one.')
-        for hname in sorted(hashes[0].keys()):
-            if hname != 'name' and hname != 'SignedData':
-                map_result_ret['pecoff hashes'][hname] = binascii.b2a_hex(hashes[0][hname]).decode()
-
-        signed_pecoffs = [x for x in results if x['name'] == 'pecoff' and
-                          'SignedData' in x]
-
-        for signed_pecoff in signed_pecoffs:
-
-            signed_datas = signed_pecoff['SignedData']
-
-            for signed_data in signed_datas:
-                map_result = {
-                    'CounterSignature': {
-
-                    },
-                    'CertChains': {},
-                    'Certificates': {},
-                }
-                blob = PecoffBlob(signed_data)
-
-                auth = auth_data.AuthData(blob.getcertificateblob())
-                content_hasher_name = auth.digest_algorithm().name
-                computed_content_hash = signed_pecoff[content_hasher_name]
-
-                try:
-                    auth.validateasn1()
-                    auth.validatehashes(computed_content_hash)
-                    auth.validatesignatures()
-                    auth.validatecertchains(time.gmtime())
-                except auth_data.Asn1Error:
-                    if auth.openssl_error:
-                        log.error('OpenSSL Errors:\n%s' % auth.openssl_error)
-
-                    log.error("Error parsing signature, raising exception")
-                    raise
-
-                # print('Program: %s, URL: %s' % (auth.program_name, auth.program_url))
-                if auth.has_countersignature:
-                    map_result['CounterSignature']['isPresent'] = True
-                    # print('Countersignature is present. Timestamp: %s UTC' %
-                    #       time.asctime(time.gmtime(auth.counter_timestamp)))
-                    map_result['CounterSignature']['Timestamp'] = time.asctime(time.gmtime(auth.counter_timestamp))
-                else:
-                    # print('Countersignature is not present.')
-                    map_result['CounterSignature']['isPresent'] = False
-
-                # print('Binary is signed with cert issued by:')
-                # pprint.pprint(auth.signing_cert_id)
-
-                print "===="
-                print auth.signing_cert_id[0]
-                print type(auth.signing_cert_id[0])
-                map_result['signing_cert_id'] = json.loads(auth.signing_cert_id[0].replace('\'', '"'))
-                # print
-
-                # print('Cert chain head issued by:')
-                # pprint.pprint(auth.cert_chain_head[2])
-                map_result['CertChains']['head'] = json.loads(auth.cert_chain_head[2][0].replace('\'', '"'))
-                # print('  Chain not before: %s UTC' %
-                #       (time.asctime(time.gmtime(auth.cert_chain_head[0]))))
-                map_result['CertChains']['Before'] = time.asctime(time.gmtime(auth.cert_chain_head[0]))
-                # print('  Chain not after: %s UTC' %
-                #       (time.asctime(time.gmtime(auth.cert_chain_head[1]))))
-                map_result['CertChains']['After'] = time.asctime(time.gmtime(auth.cert_chain_head[1]))
-                # print
-
-                if auth.has_countersignature:
-                    # print('Countersig chain head issued by:')
-                    map_result['CounterSignature']['Chain'] = {}
-                    # pprint.pprint(auth.counter_chain_head[2])
-                    map_result['CounterSignature']['Chain']['head'] = json.loads(
-                        auth.counter_chain_head[2][0].replace('\'', '"'))
-                    # print('  Countersig not before: %s UTC' %
-                    #       (time.asctime(time.gmtime(auth.counter_chain_head[0]))))
-                    map_result['CounterSignature']['Chain']['Before'] = time.asctime(time.gmtime(auth.counter_chain_head[0]))
-                    # print('  Countersig not after: %s UTC' %
-                    #       (time.asctime(time.gmtime(auth.counter_chain_head[1]))))
-                    map_result['CounterSignature']['Chain']['After'] = time.asctime(time.gmtime(auth.counter_chain_head[1]))
-                    # print
-
-                # print('Certificates')
-                for (issuer, serial), cert in auth.certificates.items():
-                    # print('  Issuer: %s' % issuer)
-                    # print('  Serial: %s' % serial)
-                    map_result['Certificates'][serial] = {
-                        'Issuer': json.loads(issuer.replace('\'', '"'))
-                    }
-                    subject = cert[0][0]['subject']
-                    subject_dn = str(dn.DistinguishedName.TraverseRdn(subject[0]))
-                    print "============="
-                    print subject_dn
-                    print "==========="
-                    # print('  Subject: %s' % subject_dn)
-                    map_result['Certificates'][serial]['Subject'] = json.loads(subject_dn.replace('\'', '"'))
-                    not_before = cert[0][0]['validity']['notBefore']
-                    not_after = cert[0][0]['validity']['notAfter']
-                    not_before_time = not_before.ToPythonEpochTime()
-                    not_after_time = not_after.ToPythonEpochTime()
-                    # print('  Not Before: %s UTC (%s)' %
-                    #       (time.asctime(time.gmtime(not_before_time)), not_before[0]))
-
-                    map_result['Certificates'][serial]['Before'] = time.asctime(time.gmtime(not_before_time))
-                    # print('  Not After: %s UTC (%s)' %
-                    #       (time.asctime(time.gmtime(not_after_time)), not_after[0]))
-                    map_result['Certificates'][serial]['After'] = time.asctime(time.gmtime(not_after_time))
-                    bin_cert = der_encoder.encode(cert)
-                    # print('  MD5: %s' % hashlib.md5(bin_cert).hexdigest())
-                    # print('  SHA1: %s' % hashlib.sha1(bin_cert).hexdigest())
-                    map_result['Certificates'][serial]['MD5'] = hashlib.md5(bin_cert).hexdigest()
-                    map_result['Certificates'][serial]['SHA1'] = hashlib.sha1(bin_cert).hexdigest()
-                    # print
-
-                if auth.trailing_data:
-                    log.error('Signature Blob had trailing (unvalidated) data (%d bytes): %s' %
-                          (len(auth.trailing_data), binascii.hexlify(auth.trailing_data)))
-
-                map_result_ret["sigs"].append(map_result)
-
-        return map_result_ret
-
+        print file_res
 
 if __name__ == "__main__":
 
-    from verifysigs.utils import fingerprint
-    from verifysigs.asn1utils import dn
-    from verifysigs.utils import auth_data
-    from verifysigs.utils.pecoff_blob import PecoffBlob
-
     import sys
+
+    from signify import signed_pe
+    import signify
 
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
 
     file_io = BytesIO(open(sys.argv[1],"rb").read())
-    try:
-        extracted_data = PEFile.extract_sigs(file_io)
-    except Exception as e:
-        print "Exception parsing data"
-        traceback.print_exc()
-        msg = e.message
-        # TODO: could extend this to deal with various types of exception messages
-        if msg == "1: Validation of content hash failed.":
-            print "PE content hash doesn't match signature. Signature was probably copied from another PE"
-
-    pprint.pprint(extracted_data)
+    res = Result()
+    PEFile.get_signify(file_io, res)
+    # try:
+    #     s_data = signed_pe.SignedPEFile(file_io)
+    # except Exception as e:
+    #     print "Exception parsing data"
+    #     traceback.print_exc()
+    #     msg = e.message
+    #
+    # try:
+    #     s_data.verify()
+    # except Exception as e:
+    #     traceback.print_exc()
+    #     print "====="
+    #     print e.message
+    #
+    # pprint.pprint(s_data)
