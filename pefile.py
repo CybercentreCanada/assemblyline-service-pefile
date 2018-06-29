@@ -15,9 +15,11 @@ import logging
 import traceback
 
 from assemblyline.common.charset import safe_str, translate_str
+from textwrap import dedent
 from assemblyline.common.hexdump import hexdump
 from assemblyline.al.common.result import Result, ResultSection
 from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT, TAG_USAGE
+from assemblyline.al.common.heuristics import Heuristic
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
 
@@ -61,6 +63,22 @@ class PEFile(ServiceBase):
     SERVICE_VERSION = '1'
     SERVICE_CPU_CORES = 0.2
     SERVICE_RAM_MB = 256
+
+    # Heuristic info
+    AL_PEFile_InvalidSig = Heuristic("AL_PEFile_InvalidSig", "Invalid Signature", "executable/windows",
+                              dedent("""\
+                                         Signature data found in PE but doesn't match the content.
+                                         This is either due to malicious copying of signature data or
+                                         an error in transmission.
+                                         """))
+    AL_PEFile_SignedPE = Heuristic("AL_PEFile_SignedPE", "Legitimately Signed EXE", "executable/windows",
+                                     dedent("""\
+                                             This PE appears to have a legitimate signature.
+                                             """))
+    AL_PEFile_SelfSigned = Heuristic("AL_PEFile_SelfSigned", "Self Signed", "executable/windows",
+                                   dedent("""\
+                                                 This PE appears is self-signed
+                                                 """))
 
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
@@ -806,19 +824,70 @@ class PEFile(ServiceBase):
         # Now try checking for verification
         try:
             s_data.verify()
+
+            # signature is verified
+            res.add_section(ResultSection(SCORE.OK, "This file is signed"))
+            res.report_heuristic(PEFile.AL_PEFile_SignedPE)
+
         except signify.exceptions.SignedPEParseError as e:
             if e.message == "The PE file does not contain a certificate table.":
                 res.add_section(ResultSection(SCORE.NULL, "No file signature data found"))
-                pass
+
             else:
-                # unknown exception?
-        # TODO: catch signify.exceptions.AuthenticodeVerificationError: The expected hash does not match the digest in SpcInfo
-        # for copied signature
+                res.add_section(ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
 
-        # catch signify.exceptions.VerificationError: Chain verification from CN=Sample.CodeSigning(serial:-63544756664968372297155069096308826323) failed: Unable to build a validation path for the certificate "Common Name: Sample.CodeSigning" - no issuer matching "Common Name: Sample.CA" was found
-        # for self signed signature
 
-        print file_res
+        except signify.exceptions.AuthenticodeVerificationError as e:
+            if e.message == "The expected hash does not match the digest in SpcInfo":
+                # This sig has been copied from another program
+                res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
+                res.report_heuristic(PEFile.AL_PEFile_InvalidSig)
+            else:
+                res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
+
+        except signify.exceptions.VerificationError as e:
+            if e.message.startswith("Chain verification from"):
+                # probably self signed
+                res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
+                res.report_heuristic(PEFile.AL_PEFile_SelfSigned)
+            else:
+                res.add_section(
+                    ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
+
+
+        # Now try to get certificate and signature data
+        sig_datas = []
+        try:
+            sig_datas.extend([x for x in s_data.signed_datas])
+        except:
+            pass
+
+        if len(sig_datas) > 0:
+            # Now extract certificate data from the sig
+            for s in sig_datas:
+                for cert in s.certificates:
+                    # x509 CERTIFICATES
+                    # ('CERT_VERSION', 230),
+                    # ('CERT_SERIAL_NO', 231),
+                    # ('CERT_SIGNATURE_ALGO', 232),
+                    # ('CERT_ISSUER', 233),
+                    # ('CERT_VALID_FROM', 234),
+                    # ('CERT_VALID_TO', 235),
+                    # ('CERT_SUBJECT', 236),
+                    # ('CERT_KEY_USAGE', 237),
+                    # ('CERT_EXTENDED_KEY_USAGE', 238),
+                    # ('CERT_SUBJECT_ALT_NAME', 239),
+                    # ('CERT_THUMBPRINT', 240),
+
+                    res.add_tag(TAG_TYPE.CERT_VERSION, str(cert.version))
+                    res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert.serial_number))
+                    res.add_tag(TAG_TYPE.CERT_ISSUER, cert.issuer_dn)
+                    res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+
+
+
+        pprint.pprint(file_res)
+
 
 if __name__ == "__main__":
 
@@ -828,7 +897,7 @@ if __name__ == "__main__":
     import signify
 
     logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)s %(message)s')
+                        format='%(asctime)s %(name)s %(levelname)s %(message)s')
 
     file_io = BytesIO(open(sys.argv[1],"rb").read())
     res = Result()
