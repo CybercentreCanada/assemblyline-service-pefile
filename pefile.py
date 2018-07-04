@@ -6,13 +6,23 @@ import chardet
 import os
 import time
 from cStringIO import StringIO
+from _io import BytesIO
+import binascii
+from pyasn1.codec.der import encoder as der_encoder
+import json
+import pprint
+import logging
+import traceback
 
 from assemblyline.common.charset import safe_str, translate_str
+from textwrap import dedent
 from assemblyline.common.hexdump import hexdump
 from assemblyline.al.common.result import Result, ResultSection
-from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
+from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT, TAG_USAGE
+from assemblyline.al.common.heuristics import Heuristic
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
+
 
 
 # Some legacy stubs
@@ -40,8 +50,10 @@ PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
 
 class PEFile(ServiceBase):
-    """ This services dumps the PE header, looks up the PeID database and attempt to find
-    some anomalies which could indicate that they are malware related. """
+    """ This services dumps the PE header and attempts to find
+    some anomalies which could indicate that they are malware related.
+
+    PEiD signature style searching should be done using the yara service"""
     SERVICE_ACCEPTS = 'executable/windows'
     SERVICE_CATEGORY = "Static Analysis"
     SERVICE_DESCRIPTION = "This service extracts imports, exports, section names, ... " \
@@ -52,10 +64,35 @@ class PEFile(ServiceBase):
     SERVICE_CPU_CORES = 0.2
     SERVICE_RAM_MB = 256
 
+    # Heuristic info
+    AL_PEFile_001 = Heuristic("AL_PEFile_001", "Invalid Signature", "executable/windows",
+                              dedent("""\
+                                         Signature data found in PE but doesn't match the content.
+                                         This is either due to malicious copying of signature data or
+                                         an error in transmission.
+                                         """))
+    AL_PEFile_002 = Heuristic("AL_PEFile_002", "Legitimately Signed EXE", "executable/windows",
+                              dedent("""\
+                                         This PE appears to have a legitimate signature.
+                                         """))
+    AL_PEFile_003 = Heuristic("AL_PEFile_003", "Self Signed", "executable/windows",
+                              dedent("""\
+                                         This PE appears is self-signed
+                                         """))
+
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
         global pefile
         import pefile
+
+        try:
+            global signed_pe, signify
+            from signify import signed_pe
+            import signify
+            self.use_signify = True
+        except ImportError:
+            self.log.warning("signify package not installed (unable to import). Reinstall the PEFile service with "
+                             "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
 
     def __init__(self, cfg=None):
         super(PEFile, self).__init__(cfg)
@@ -73,28 +110,10 @@ class PEFile(ServiceBase):
         self.patch_section = None
         self.request = None
         self.path = None
+        self.use_signify = False
 
-    # TODO: We can probably call PEFile's get_imphash.
     def get_imphash(self):
-        impstrs = []
-        exts = ['ocx', 'sys', 'dll']
-        if not hasattr(self.pe_file, "DIRECTORY_ENTRY_IMPORT"):
-            return ""
-        for entry in self.pe_file.DIRECTORY_ENTRY_IMPORT:
-            libname = entry.dll.lower()
-            parts = libname.rsplit('.', 1)
-            if len(parts) > 1 and parts[1] in exts:
-                libname = parts[0]
-
-            for imp in entry.imports:
-                funcname = imp.name or str(imp.ordinal)
-
-                if not funcname:
-                    continue
-
-                impstrs.append('%s.%s' % (libname.lower(), funcname.lower()))
-
-        return hashlib.md5(','.join(impstrs)).hexdigest()
+        return self.pe_file.get_imphash()
 
     # noinspection PyPep8Naming
     def get_pe_info(self, lcid):
@@ -327,16 +346,17 @@ class PEFile(ServiceBase):
                         self.file_res.add_section(pe_resource_verinfo_res)
 
                         try:
-                            if hasattr(file_info.StringTable[0], "LangID"):
-                                if not int(file_info.StringTable[0].LangID, 16) >> 16 == 0:
-                                    txt = ('LangId: ' + file_info.StringTable[0].LangID + " (" + lcid[
-                                        int(file_info.StringTable[0].LangID, 16) >> 16] + ")")
+                            if "LangID" in file_info.StringTable[0].entries:
+                                lang_id = file_info.StringTable[0].get("LangID")
+                                if not int(lang_id, 16) >> 16 == 0:
+                                    txt = ('LangId: ' + lang_id + " (" + lcid[
+                                        int(lang_id, 16) >> 16] + ")")
                                     pe_resource_verinfo_res.add_line(txt)
                                 else:
-                                    txt = ('LangId: ' + file_info.StringTable[0].LangID + " (NEUTRAL)")
+                                    txt = ('LangId: ' + lang_id + " (NEUTRAL)")
                                     pe_resource_verinfo_res.add_line(txt)
                         except (ValueError, KeyError):
-                            txt = ('LangId: %s is invalid' % file_info.StringTable[0].LangID)
+                            txt = ('LangId: %s is invalid' % lang_id)
                             pe_resource_verinfo_res.add_line(txt)
 
                         for entry in file_info.StringTable[0].entries.items():
@@ -764,3 +784,144 @@ class PEFile(ServiceBase):
 
             # Here is general PE info
             self.get_pe_info(G_LCID)
+
+            file_io = BytesIO(file_content)
+
+            extracted_data = None
+            try:
+                extracted_data = PEFile.get_signify(file_io, self.file_res, self.log)
+            except Exception as e:
+                res = ResultSection(SCORE.NULL, "Error trying to check for PE signatures")
+                res.add_line("Traceback:")
+                res.add_lines(traceback.format_exc().splitlines())
+
+                self.file_res.add_section(res)
+
+    @staticmethod
+    def get_signify(file_handle, res, log = None):
+
+        if log == None:
+            log = logging.getLogger("get_signify")
+        else:
+            log = log.getChild("get_signify")
+
+        # first, let's try parsing the file
+        try:
+            s_data = signed_pe.SignedPEFile(file_handle)
+        except Exception as e:
+            log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
+
+        # Now try checking for verification
+        try:
+            s_data.verify()
+
+            # signature is verified
+            res.add_section(ResultSection(SCORE.OK, "This file is signed"))
+            res.report_heuristic(PEFile.AL_PEFile_002)
+
+        except signify.exceptions.SignedPEParseError as e:
+            if e.message == "The PE file does not contain a certificate table.":
+                res.add_section(ResultSection(SCORE.NULL, "No file signature data found"))
+
+            else:
+                res.add_section(ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
+
+        except signify.exceptions.AuthenticodeVerificationError as e:
+            if e.message == "The expected hash does not match the digest in SpcInfo":
+                # This sig has been copied from another program
+                res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
+                res.report_heuristic(PEFile.AL_PEFile_001)
+            else:
+                res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
+
+        except signify.exceptions.VerificationError as e:
+            if e.message.startswith("Chain verification from"):
+                # probably self signed
+                res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
+                res.report_heuristic(PEFile.AL_PEFile_003)
+            else:
+                res.add_section(
+                    ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
+
+
+        # Now try to get certificate and signature data
+        sig_datas = []
+        try:
+            sig_datas.extend([x for x in s_data.signed_datas])
+        except:
+            pass
+
+        if len(sig_datas) > 0:
+            # Now extract certificate data from the sig
+            for s in sig_datas:
+                # Extract signer info. This is probably the most useful?
+                res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(s.signer_info.serial_number))
+                res.add_tag(TAG_TYPE.CERT_ISSUER, s.signer_info.issuer_dn)
+
+                # Get cert used for signing, then add valid from/to info
+                for cert in [x for x in s.certificates if x.serial_number == s.signer_info.serial_number]:
+                    res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
+                    res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+                    res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
+
+                for cert in s.certificates:
+                    cert_res = ResultSection(SCORE.NULL, "Certificate Information")
+                    # x509 CERTIFICATES
+                    # ('CERT_VERSION', 230),
+                    # ('CERT_SERIAL_NO', 231),
+                    # ('CERT_SIGNATURE_ALGO', 232),
+                    # ('CERT_ISSUER', 233),
+                    # ('CERT_VALID_FROM', 234),
+                    # ('CERT_VALID_TO', 235),
+                    # ('CERT_SUBJECT', 236),
+                    # ('CERT_KEY_USAGE', 237),
+                    # ('CERT_EXTENDED_KEY_USAGE', 238),
+                    # ('CERT_SUBJECT_ALT_NAME', 239),
+                    # ('CERT_THUMBPRINT', 240),
+
+                    # probably not worth doing tags for all this info?
+                    cert_res.add_lines(["CERT_VERSION: %d" % cert.version,
+                                        "CERT_SERIAL_NO: %d" % cert.serial_number,
+                                        "CERT_ISSUER: %s" % cert.issuer_dn,
+                                        "CERT_SUBJECT: %s" % cert.subject_dn,
+                                        "CERT_VALID_FROM: %s" % cert.valid_from.isoformat(),
+                                        "CERT_VALID_TO: %s" % cert.valid_to.isoformat()])
+                    # cert_res.add_tag(TAG_TYPE.CERT_VERSION, str(cert.version))
+                    # cert_res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert.serial_number))
+                    # cert_res.add_tag(TAG_TYPE.CERT_ISSUER, cert.issuer_dn)
+                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
+                    # cert_res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
+
+                    res.add_section(cert_res)
+        # pprint.pprint(file_res)
+
+
+if __name__ == "__main__":
+
+    import sys
+
+    from signify import signed_pe
+    import signify
+
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(name)s %(levelname)s %(message)s')
+
+    file_io = BytesIO(open(sys.argv[1],"rb").read())
+    res = Result()
+    PEFile.get_signify(file_io, res)
+    # try:
+    #     s_data = signed_pe.SignedPEFile(file_io)
+    # except Exception as e:
+    #     print "Exception parsing data"
+    #     traceback.print_exc()
+    #     msg = e.message
+    #
+    # try:
+    #     s_data.verify()
+    # except Exception as e:
+    #     traceback.print_exc()
+    #     print "====="
+    #     print e.message
+    #
+    # pprint.pprint(s_data)
