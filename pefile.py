@@ -65,20 +65,20 @@ class PEFile(ServiceBase):
     SERVICE_RAM_MB = 256
 
     # Heuristic info
-    AL_PEFile_InvalidSig = Heuristic("AL_PEFile_InvalidSig", "Invalid Signature", "executable/windows",
+    AL_PEFile_001 = Heuristic("AL_PEFile_001", "Invalid Signature", "executable/windows",
                               dedent("""\
                                          Signature data found in PE but doesn't match the content.
                                          This is either due to malicious copying of signature data or
                                          an error in transmission.
                                          """))
-    AL_PEFile_SignedPE = Heuristic("AL_PEFile_SignedPE", "Legitimately Signed EXE", "executable/windows",
-                                     dedent("""\
-                                             This PE appears to have a legitimate signature.
-                                             """))
-    AL_PEFile_SelfSigned = Heuristic("AL_PEFile_SelfSigned", "Self Signed", "executable/windows",
-                                   dedent("""\
-                                                 This PE appears is self-signed
-                                                 """))
+    AL_PEFile_002 = Heuristic("AL_PEFile_002", "Legitimately Signed EXE", "executable/windows",
+                              dedent("""\
+                                         This PE appears to have a legitimate signature.
+                                         """))
+    AL_PEFile_003 = Heuristic("AL_PEFile_003", "Self Signed", "executable/windows",
+                              dedent("""\
+                                         This PE appears is self-signed
+                                         """))
 
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
@@ -789,26 +789,16 @@ class PEFile(ServiceBase):
 
             extracted_data = None
             try:
-                extracted_data = PEFile.extract_sigs(file_io)
+                extracted_data = PEFile.get_signify(file_io, self.file_res, self.log)
             except Exception as e:
                 res = ResultSection(SCORE.NULL, "Error trying to check for PE signatures")
                 res.add_line("Traceback:")
                 res.add_lines(traceback.format_exc().splitlines())
 
-                msg = e.message
-                # TODO: could extend this to deal with other types of exception messages
-                if msg == "1: Validation of content hash failed.":
-                    # TODO: add heuristc for this?
-
-                    # Add a subsection with an actual score here
-                    res.add_section(ResultSection(SCORE.MED,
-                                                  "PE content hash doesn't match signature. "
-                                                  "Signature was probably copied from another PE"))
-
                 self.file_res.add_section(res)
 
     @staticmethod
-    def get_signify(file_handle, file_res, log = None):
+    def get_signify(file_handle, res, log = None):
 
         if log == None:
             log = logging.getLogger("get_signify")
@@ -827,7 +817,7 @@ class PEFile(ServiceBase):
 
             # signature is verified
             res.add_section(ResultSection(SCORE.OK, "This file is signed"))
-            res.report_heuristic(PEFile.AL_PEFile_SignedPE)
+            res.report_heuristic(PEFile.AL_PEFile_002)
 
         except signify.exceptions.SignedPEParseError as e:
             if e.message == "The PE file does not contain a certificate table.":
@@ -836,12 +826,11 @@ class PEFile(ServiceBase):
             else:
                 res.add_section(ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
 
-
         except signify.exceptions.AuthenticodeVerificationError as e:
             if e.message == "The expected hash does not match the digest in SpcInfo":
                 # This sig has been copied from another program
                 res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
-                res.report_heuristic(PEFile.AL_PEFile_InvalidSig)
+                res.report_heuristic(PEFile.AL_PEFile_001)
             else:
                 res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
 
@@ -849,7 +838,7 @@ class PEFile(ServiceBase):
             if e.message.startswith("Chain verification from"):
                 # probably self signed
                 res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
-                res.report_heuristic(PEFile.AL_PEFile_SelfSigned)
+                res.report_heuristic(PEFile.AL_PEFile_003)
             else:
                 res.add_section(
                     ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
@@ -865,7 +854,18 @@ class PEFile(ServiceBase):
         if len(sig_datas) > 0:
             # Now extract certificate data from the sig
             for s in sig_datas:
+                # Extract signer info. This is probably the most useful?
+                res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(s.signer_info.serial_number))
+                res.add_tag(TAG_TYPE.CERT_ISSUER, s.signer_info.issuer_dn)
+
+                # Get cert used for signing, then add valid from/to info
+                for cert in [x for x in s.certificates if x.serial_number == s.signer_info.serial_number]:
+                    res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
+                    res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+                    res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
+
                 for cert in s.certificates:
+                    cert_res = ResultSection(SCORE.NULL, "Certificate Information")
                     # x509 CERTIFICATES
                     # ('CERT_VERSION', 230),
                     # ('CERT_SERIAL_NO', 231),
@@ -879,14 +879,22 @@ class PEFile(ServiceBase):
                     # ('CERT_SUBJECT_ALT_NAME', 239),
                     # ('CERT_THUMBPRINT', 240),
 
-                    res.add_tag(TAG_TYPE.CERT_VERSION, str(cert.version))
-                    res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert.serial_number))
-                    res.add_tag(TAG_TYPE.CERT_ISSUER, cert.issuer_dn)
-                    res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+                    # probably not worth doing tags for all this info?
+                    cert_res.add_lines(["CERT_VERSION: %d" % cert.version,
+                                        "CERT_SERIAL_NO: %d" % cert.serial_number,
+                                        "CERT_ISSUER: %s" % cert.issuer_dn,
+                                        "CERT_SUBJECT: %s" % cert.subject_dn,
+                                        "CERT_VALID_FROM: %s" % cert.valid_from.isoformat(),
+                                        "CERT_VALID_TO: %s" % cert.valid_to.isoformat()])
+                    # cert_res.add_tag(TAG_TYPE.CERT_VERSION, str(cert.version))
+                    # cert_res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert.serial_number))
+                    # cert_res.add_tag(TAG_TYPE.CERT_ISSUER, cert.issuer_dn)
+                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
+                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
+                    # cert_res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
 
-
-
-        pprint.pprint(file_res)
+                    res.add_section(cert_res)
+        # pprint.pprint(file_res)
 
 
 if __name__ == "__main__":
