@@ -22,6 +22,7 @@ from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORM
 from assemblyline.al.common.heuristics import Heuristic
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
+from assemblyline.common.entropy import calculate_partition_entropy
 
 
 
@@ -170,15 +171,40 @@ class PEFile(ServiceBase):
 
         try:
             for (sname, section, sec_md5, sec_entropy) in self._sect_list:
-                txt = [sname, " - Virtual: 0x%08X (0x%08X bytes)"
-                              " - Physical: 0x%08X (0x%08X bytes) - " %
-                       (section.VirtualAddress, section.Misc_VirtualSize,
-                        section.PointerToRawData, section.SizeOfRawData), "hash:",
+
+                # Create a new subsection
+                section_io = BytesIO(section.get_data())
+                (entropy, part_entropies) = calculate_partition_entropy(section_io)
+
+                entropy_graph_data = {
+                    'type': 'colormap',
+                    'data': {
+                        'domain': [0, 8],
+                        'values': part_entropies
+                    }
+                }
+
+                txt = ["hash:",
                        res_txt_tag(sec_md5, TAG_TYPE['PE_SECTION_HASH']),
-                       " - entropy:%f (min:0.0, Max=8.0)" % sec_entropy]
+                       " - Entropy: %f" % round(entropy, 3)]
+
+                pe_subsec = ResultSection(
+                    SCORE.NULL,
+                    # 'Entropy.\tEntire Section: {}'.format(round(entropy, 3)),
+                    "%s - Virtual: 0x%08X (0x%08X bytes)"
+                           " - Physical: 0x%08X (0x%08X bytes) - " %
+                           (sname, section.VirtualAddress, section.Misc_VirtualSize,
+                            section.PointerToRawData, section.SizeOfRawData),
+                    self.SERVICE_CLASSIFICATION,
+                    body_format=TEXT_FORMAT.GRAPH_DATA,
+                    body=json.dumps(entropy_graph_data))
+                # pe_subsec.add_lines(txt)
+                pe_sec_res.add_section(pe_subsec)
+
+
                 # add a search tag for the Section Hash
                 make_tag(self.file_res, 'PE_SECTION_HASH', sec_md5, 'HIGH', usage='CORRELATION')
-                pe_sec_res.add_line(txt)
+                # pe_sec_res.add_line(txt)
 
         except AttributeError:
             pass
