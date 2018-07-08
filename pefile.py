@@ -81,6 +81,13 @@ class PEFile(ServiceBase):
                                          This PE appears is self-signed
                                          """))
 
+    # high section entropy
+    # http://n10info.blogspot.com/2014/06/entropy-and-distinctive-signs-of-packed.html
+    AL_PEFile_004 = Heuristic("AL_PEFile_004", "HighSectionEntropy", "executable/windows",
+                              dedent("""\
+                              This PE contains at least one section with entropy > 7.5, which
+                              may indicate packed or encrypted code"""))
+
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
         global pefile
@@ -184,27 +191,26 @@ class PEFile(ServiceBase):
                     }
                 }
 
-                txt = ["hash:",
-                       res_txt_tag(sec_md5, TAG_TYPE['PE_SECTION_HASH']),
-                       " - Entropy: %f" % round(entropy, 3)]
-
                 pe_subsec = ResultSection(
                     SCORE.NULL,
-                    # 'Entropy.\tEntire Section: {}'.format(round(entropy, 3)),
                     "%s - Virtual: 0x%08X (0x%08X bytes)"
-                           " - Physical: 0x%08X (0x%08X bytes) - " %
+                    " - Physical: 0x%08X (0x%08X bytes) - "
+                    "hash: %s - entropy: %f " %
                            (sname, section.VirtualAddress, section.Misc_VirtualSize,
-                            section.PointerToRawData, section.SizeOfRawData),
+                            section.PointerToRawData, section.SizeOfRawData,
+                            sec_md5, round(entropy, 3)),
                     self.SERVICE_CLASSIFICATION,
                     body_format=TEXT_FORMAT.GRAPH_DATA,
                     body=json.dumps(entropy_graph_data))
-                # pe_subsec.add_lines(txt)
                 pe_sec_res.add_section(pe_subsec)
 
+                if entropy > 7.5:
+                    self.file_res.report_heuristic(PEFile.AL_PEFile_004)
+                    pe_sec_res.add_section(ResultSection(SCORE.HIGH,
+                                                         "%s section has high entropy" % sname))
 
                 # add a search tag for the Section Hash
                 make_tag(self.file_res, 'PE_SECTION_HASH', sec_md5, 'HIGH', usage='CORRELATION')
-                # pe_sec_res.add_line(txt)
 
         except AttributeError:
             pass
