@@ -886,7 +886,7 @@ class PEFile(ServiceBase):
                     apivector.get("user_list", {}).get("num_unique_apis", 0),
                     apivector.get("user_list", {}).get("vector", "")
                 )
-                self.log.info("got apivector str: %s" % apivector_str)
+                # self.log.info("got apivector str: %s" % apivector_str)
                 self.file_res.add_tag(TAG_TYPE.PE_APIVECTOR, apivector_str)
 
     @staticmethod
