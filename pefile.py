@@ -10,7 +10,7 @@ from _io import BytesIO
 import binascii
 from pyasn1.codec.der import encoder as der_encoder
 import json
-import pprint
+import re
 import logging
 import traceback
 
@@ -23,6 +23,7 @@ from assemblyline.al.common.heuristics import Heuristic
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
 from assemblyline.common.entropy import calculate_partition_entropy
+import importlib
 
 
 
@@ -90,8 +91,10 @@ class PEFile(ServiceBase):
 
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
-        global pefile
+        global pefile, pyimpfuzzy
         import pefile
+
+        pyimpfuzzy = importlib.import_module("al_services.alsvc_pefile.pyimpfuzzy.pyimpfuzzy")
 
         try:
             global signed_pe, signify, fingerprinter
@@ -100,6 +103,14 @@ class PEFile(ServiceBase):
             self.use_signify = True
         except ImportError:
             self.log.warning("signify package not installed (unable to import). Reinstall the PEFile service with "
+                             "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
+
+        try:
+            global ApiVector
+            from apiscout import ApiVector
+            self.use_apiscout = True
+        except ImportError:
+            self.log.warning("apiscout package not installed (unable to import). Reinstall the PEFile service with "
                              "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
 
     def __init__(self, cfg=None):
@@ -119,6 +130,19 @@ class PEFile(ServiceBase):
         self.request = None
         self.path = None
         self.use_signify = False
+        self.use_apiscout = False
+        self.apivector = None
+
+    def start(self):
+
+        if self.use_apiscout:
+            self.log.info("apiscout appears to be installed, using apiscout")
+            # initialize the apivector object with the vector definition
+            api_vector_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "apivector", "winapi1024v1.txt")
+            self.log.info("Using apivector file: %s" % api_vector_file)
+            if not os.path.exists(api_vector_file) or not os.path.isfile(api_vector_file):
+                self.log.error("There appears to be something wrong with the API vector file definition %s" % api_vector_file)
+            self.apivector = ApiVector.ApiVector(winapi1024_filepath=api_vector_file)
 
     def get_imphash(self):
         return self.pe_file.get_imphash()
@@ -828,6 +852,42 @@ class PEFile(ServiceBase):
                 res.add_lines(traceback.format_exc().splitlines())
 
                 self.file_res.add_section(res)
+
+            # Add fuzzy hash
+            impfuzzy_pefile = pyimpfuzzy.pefileEx(data=file_content)
+            # fuzzy_import = pyimpfuzzy.get_impfuzzy_data(file_content, sort=False)
+            # fuzzy_import_sorted = pyimpfuzzy.get_impfuzzy_data(file_content, sort=True)
+            fuzzy_import = impfuzzy_pefile.get_impfuzzy(sort=False)
+            fuzzy_import_sorted = impfuzzy_pefile.get_impfuzzy(sort=True)
+            self.file_res.add_tag(TAG_TYPE.PE_IMPORT_FUZZY, fuzzy_import)
+            self.file_res.add_tag(TAG_TYPE.PE_IMPORT_SORTED_FUZZY, fuzzy_import_sorted)
+
+            # Calculate the apivector if apiscout is installed
+            if self.use_apiscout:
+                # self.log.info("getting apivector..")
+                # We need to do a bit of manipulation on the list of API calls to normalize to
+                # the format that apiscout/apivector expects, notably (from apivector blog post)
+                # We drop the string type, i.e. A or W if applicable
+                # We ignore MSVCRT versions, i.e. msvcrt80.dll!time becoming msvcrt.dll!time
+                apilist = (x.replace(".","!").rstrip("aw") for x in impfuzzy_pefile.calc_impfuzzy(return_list=True))
+                apilist2 = [re.sub("msvcrt[0-9]+!", "msvcrt!", x) for x in apilist]
+                apivector = self.apivector.getApiVectorFromApiList(apilist2)
+
+                # apivector is given as something like:
+                # {'user_list': {'in_api_vector': 2,
+                #                'num_unique_apis': 2,
+                #                'percentage': 100.0,
+                #                'vector': 'A40BA93QA36'}}
+                # So for the sake of tagging, we'll just make it a colon separated string of
+                # in_api_vector:num_unique_apis:vector
+                # (omitting the percentage, since that's easy to recalculate)
+                apivector_str = "%d:%d:%s" % (
+                    apivector.get("user_list",{}).get("in_api_vector",0),
+                    apivector.get("user_list", {}).get("num_unique_apis", 0),
+                    apivector.get("user_list", {}).get("vector", "")
+                )
+                self.log.info("got apivector str: %s" % apivector_str)
+                self.file_res.add_tag(TAG_TYPE.PE_APIVECTOR, apivector_str)
 
     @staticmethod
     def get_signify(file_handle, in_res, log = None):
