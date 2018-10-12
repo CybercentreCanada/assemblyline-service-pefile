@@ -94,8 +94,8 @@ class PEFile(ServiceBase):
         import pefile
 
         try:
-            global signed_pe, signify
-            from signify import signed_pe
+            global signed_pe, signify, fingerprinter
+            from signify import signed_pe, fingerprinter
             import signify
             self.use_signify = True
         except ImportError:
@@ -830,7 +830,10 @@ class PEFile(ServiceBase):
                 self.file_res.add_section(res)
 
     @staticmethod
-    def get_signify(file_handle, res, log = None):
+    def get_signify(file_handle, in_res, log = None):
+
+        res = ResultSection(SCORE.NULL, "Signature Information")
+        in_res.add_section(res)
 
         if log == None:
             log = logging.getLogger("get_signify")
@@ -849,7 +852,7 @@ class PEFile(ServiceBase):
 
             # signature is verified
             res.add_section(ResultSection(SCORE.OK, "This file is signed"))
-            res.report_heuristic(PEFile.AL_PEFile_002)
+            in_res.report_heuristic(PEFile.AL_PEFile_002)
 
         except signify.exceptions.SignedPEParseError as e:
             if e.message == "The PE file does not contain a certificate table.":
@@ -862,7 +865,7 @@ class PEFile(ServiceBase):
             if e.message == "The expected hash does not match the digest in SpcInfo":
                 # This sig has been copied from another program
                 res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
-                res.report_heuristic(PEFile.AL_PEFile_001)
+                in_res.report_heuristic(PEFile.AL_PEFile_001)
             else:
                 res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
 
@@ -870,11 +873,10 @@ class PEFile(ServiceBase):
             if e.message.startswith("Chain verification from"):
                 # probably self signed
                 res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
-                res.report_heuristic(PEFile.AL_PEFile_003)
+                in_res.report_heuristic(PEFile.AL_PEFile_003)
             else:
                 res.add_section(
                     ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
-
 
         # Now try to get certificate and signature data
         sig_datas = []
@@ -926,6 +928,17 @@ class PEFile(ServiceBase):
                     # cert_res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
 
                     res.add_section(cert_res)
+
+            # Calculate the CERT_THUMBPRINT as the 'authentihash'
+            # Based on what I could fine online, this seems to normally be
+            # a sha1
+            file_handle.seek(0)
+            authentihash_fingerprint = fingerprinter.AuthenticodeFingerprinter(file_handle)
+            authentihash_fingerprint.add_authenticode_hashers(hashlib.sha1)
+            hashes = authentihash_fingerprint.hashes()
+            sha1_digest = binascii.hexlify(hashes.get("authentihash",{}).get("sha1",""))
+            res.add_tag(TAG_TYPE.CERT_THUMBPRINT, sha1_digest)
+
         # pprint.pprint(file_res)
 
 
