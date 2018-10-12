@@ -22,6 +22,7 @@ from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORM
 from assemblyline.al.common.heuristics import Heuristic
 from assemblyline.al.service.base import ServiceBase
 from al_services.alsvc_pefile.LCID import LCID as G_LCID
+from assemblyline.common.entropy import calculate_partition_entropy
 
 
 
@@ -80,14 +81,21 @@ class PEFile(ServiceBase):
                                          This PE appears is self-signed
                                          """))
 
+    # high section entropy
+    # http://n10info.blogspot.com/2014/06/entropy-and-distinctive-signs-of-packed.html
+    AL_PEFile_004 = Heuristic("AL_PEFile_004", "HighSectionEntropy", "executable/windows",
+                              dedent("""\
+                              This PE contains at least one section with entropy > 7.5, which
+                              may indicate packed or encrypted code"""))
+
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
         global pefile
         import pefile
 
         try:
-            global signed_pe, signify
-            from signify import signed_pe
+            global signed_pe, signify, fingerprinter
+            from signify import signed_pe, fingerprinter
             import signify
             self.use_signify = True
         except ImportError:
@@ -170,15 +178,39 @@ class PEFile(ServiceBase):
 
         try:
             for (sname, section, sec_md5, sec_entropy) in self._sect_list:
-                txt = [sname, " - Virtual: 0x%08X (0x%08X bytes)"
-                              " - Physical: 0x%08X (0x%08X bytes) - " %
-                       (section.VirtualAddress, section.Misc_VirtualSize,
-                        section.PointerToRawData, section.SizeOfRawData), "hash:",
-                       res_txt_tag(sec_md5, TAG_TYPE['PE_SECTION_HASH']),
-                       " - entropy:%f (min:0.0, Max=8.0)" % sec_entropy]
+
+                # Create a new subsection
+                section_io = BytesIO(section.get_data())
+                (entropy, part_entropies) = calculate_partition_entropy(section_io)
+
+                entropy_graph_data = {
+                    'type': 'colormap',
+                    'data': {
+                        'domain': [0, 8],
+                        'values': part_entropies
+                    }
+                }
+
+                pe_subsec = ResultSection(
+                    SCORE.NULL,
+                    "%s - Virtual: 0x%08X (0x%08X bytes)"
+                    " - Physical: 0x%08X (0x%08X bytes) - "
+                    "hash: %s - entropy: %f " %
+                           (sname, section.VirtualAddress, section.Misc_VirtualSize,
+                            section.PointerToRawData, section.SizeOfRawData,
+                            sec_md5, round(entropy, 3)),
+                    self.SERVICE_CLASSIFICATION,
+                    body_format=TEXT_FORMAT.GRAPH_DATA,
+                    body=json.dumps(entropy_graph_data))
+                pe_sec_res.add_section(pe_subsec)
+
+                if entropy > 7.5:
+                    self.file_res.report_heuristic(PEFile.AL_PEFile_004)
+                    pe_sec_res.add_section(ResultSection(SCORE.HIGH,
+                                                         "%s section has high entropy" % sname))
+
                 # add a search tag for the Section Hash
                 make_tag(self.file_res, 'PE_SECTION_HASH', sec_md5, 'HIGH', usage='CORRELATION')
-                pe_sec_res.add_line(txt)
 
         except AttributeError:
             pass
@@ -798,7 +830,10 @@ class PEFile(ServiceBase):
                 self.file_res.add_section(res)
 
     @staticmethod
-    def get_signify(file_handle, res, log = None):
+    def get_signify(file_handle, in_res, log = None):
+
+        res = ResultSection(SCORE.NULL, "Signature Information")
+        in_res.add_section(res)
 
         if log == None:
             log = logging.getLogger("get_signify")
@@ -817,7 +852,7 @@ class PEFile(ServiceBase):
 
             # signature is verified
             res.add_section(ResultSection(SCORE.OK, "This file is signed"))
-            res.report_heuristic(PEFile.AL_PEFile_002)
+            in_res.report_heuristic(PEFile.AL_PEFile_002)
 
         except signify.exceptions.SignedPEParseError as e:
             if e.message == "The PE file does not contain a certificate table.":
@@ -830,7 +865,7 @@ class PEFile(ServiceBase):
             if e.message == "The expected hash does not match the digest in SpcInfo":
                 # This sig has been copied from another program
                 res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
-                res.report_heuristic(PEFile.AL_PEFile_001)
+                in_res.report_heuristic(PEFile.AL_PEFile_001)
             else:
                 res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
 
@@ -838,11 +873,10 @@ class PEFile(ServiceBase):
             if e.message.startswith("Chain verification from"):
                 # probably self signed
                 res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
-                res.report_heuristic(PEFile.AL_PEFile_003)
+                in_res.report_heuristic(PEFile.AL_PEFile_003)
             else:
                 res.add_section(
                     ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
-
 
         # Now try to get certificate and signature data
         sig_datas = []
@@ -894,6 +928,17 @@ class PEFile(ServiceBase):
                     # cert_res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
 
                     res.add_section(cert_res)
+
+            # Calculate the CERT_THUMBPRINT as the 'authentihash'
+            # Based on what I could fine online, this seems to normally be
+            # a sha1
+            file_handle.seek(0)
+            authentihash_fingerprint = fingerprinter.AuthenticodeFingerprinter(file_handle)
+            authentihash_fingerprint.add_authenticode_hashers(hashlib.sha1)
+            hashes = authentihash_fingerprint.hashes()
+            sha1_digest = binascii.hexlify(hashes.get("authentihash",{}).get("sha1",""))
+            res.add_tag(TAG_TYPE.CERT_THUMBPRINT, sha1_digest)
+
         # pprint.pprint(file_res)
 
 
