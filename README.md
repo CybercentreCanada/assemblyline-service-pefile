@@ -31,5 +31,6 @@ This services attempts to extract PE headers and provides the following informat
         - LangID
         - Original Filename (AL tag: PE_VERSION_INFO_ORIGINAL_FILENAME)
         - File Description (AL tag: PE_VERSION_INFO_FILE_DESCRIPTION)
-
+- Authenticode Signature Information
+    - done using a [branch](https://github.com/jdval/signify) of [signify](https://signify.readthedocs.io/en/latest/) that works with python2
 
