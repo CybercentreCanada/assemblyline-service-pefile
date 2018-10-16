@@ -22,6 +22,7 @@ This services attempts to extract PE headers and provides the following informat
 - IMPORTs Info, including:
     - Table Listing
     - Import Hashes (AL tags: PE_IMPORT_MD5, PE_IMPORT_SORTED_SHA1)
+    - Fuzzy import hashes (tags: PE_IMPORT_FUZZY, PE_IMPORT_FUZZY_SORTED)
 - EXPORTs Info, including:
     - Module Name (AL tag: PE_EXPORT_MODULE_NAME)
 - RESOURCES Info, including:
@@ -33,4 +34,6 @@ This services attempts to extract PE headers and provides the following informat
         - File Description (AL tag: PE_VERSION_INFO_FILE_DESCRIPTION)
 - Authenticode Signature Information
     - done using a [branch](https://github.com/jdval/signify) of [signify](https://signify.readthedocs.io/en/latest/) that works with python2
+    - Extracted to AL tags CERT_* (only the certificate information for the signing certificate)
+- [API Vector](http://byte-atlas.blogspot.com/2018/04/apivectors.html) extraction
 
