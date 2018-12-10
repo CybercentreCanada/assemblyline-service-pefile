@@ -79,7 +79,7 @@ class PEFile(ServiceBase):
                                          """))
     AL_PEFile_003 = Heuristic("AL_PEFile_003", "Self Signed", "executable/windows",
                               dedent("""\
-                                         This PE appears is self-signed
+                                         This PE appears is self-signed. All certificates are from the same issuer.
                                          """))
 
     # high section entropy
@@ -88,6 +88,10 @@ class PEFile(ServiceBase):
                               dedent("""\
                               This PE contains at least one section with entropy > 7.5, which
                               may indicate packed or encrypted code"""))
+
+    AL_PEFile_005 = Heuristic("AL_PEFile_005", "UnknownRootCA", "executable/windows",
+                              "This PE may be self signed. A chain of trust back to a known root CA was not found "
+                              "however certificates presented had different issuers")
 
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
@@ -931,9 +935,25 @@ class PEFile(ServiceBase):
 
         except signify.exceptions.VerificationError as e:
             if e.message.startswith("Chain verification from"):
-                # probably self signed
-                res.add_section(ResultSection(SCORE.MED, "File is self-signed"))
-                in_res.report_heuristic(PEFile.AL_PEFile_003)
+                # probably self signed, but maybe we just don't have the root CA
+                flatten = lambda l: [item for sublist in l for item in sublist]
+                cert_list = flatten([x.certificates for x in s_data.signed_datas])
+
+                # Check to see if all of the issuers are the same. If they are, then this is likely self signed
+                # Otherwise, it *may* still be still signed, *or* just signed by a root CA we don't know about
+                if len(cert_list) >= 2:
+                    if all([cert_list[i].issuer == cert_list[i + 1].issuer for i in range(len(cert_list) - 1)]):
+                        res.add_section(ResultSection(SCORE.VHIGH, "File is self-signed, all certificate issuers match"))
+                        in_res.report_heuristic(PEFile.AL_PEFile_003)
+                    else:
+                        res.add_section(ResultSection(SCORE.HIGH, "Possibly self signed. "
+                                                                 "Could not identify a chain of "
+                                                                 "trust back to a known root CA, but certificates "
+                                                                 "presented were issued by different issuers"))
+                        in_res.report_heuristic(PEFile.AL_PEFile_005)
+                else:
+                    res.add_section(ResultSection(SCORE.MED,
+                                                  "This is probably an error. Less than 2 certificates were found"))
             else:
                 res.add_section(
                     ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
