@@ -66,6 +66,12 @@ class PEFile(ServiceBase):
     SERVICE_CPU_CORES = 0.2
     SERVICE_RAM_MB = 256
 
+    SERVICE_DEFAULT_CONFIG = {
+        # this is the default path for root CAs on at least ubuntu 14.04 and 18.04
+        # certs in this list of paths will be added to the trusted roots included with the signify package
+        "trusted_certs": ["/usr/share/ca-certificates/mozilla/"]
+    }
+
     # Heuristic info
     AL_PEFile_001 = Heuristic("AL_PEFile_001", "Invalid Signature", "executable/windows",
                               dedent("""\
@@ -92,6 +98,9 @@ class PEFile(ServiceBase):
     AL_PEFile_005 = Heuristic("AL_PEFile_005", "UnknownRootCA", "executable/windows",
                               "This PE may be self signed. A chain of trust back to a known root CA was not found "
                               "however certificates presented had different issuers")
+    AL_PEFile_006 = Heuristic("AL_PEFile_006", "SelfSignedCert", "executable/windows",
+                              "This PE is signed by a certificate which is signed by itself")
+
 
     # noinspection PyGlobalUndefined,PyUnresolvedReferences
     def import_service_deps(self):
@@ -102,9 +111,20 @@ class PEFile(ServiceBase):
 
         try:
             global signed_pe, signify, fingerprinter
-            from signify import signed_pe, fingerprinter
+            from signify import signed_pe, fingerprinter, authenticode, context
             import signify
             self.use_signify = True
+
+            import pathlib2 as pathlib
+
+            # Add configured trusted certs
+            more_trusted_certs = self.cfg.get("trusted_certs", self.SERVICE_DEFAULT_CONFIG.get("trusted_certs", []))
+            for cert_path in more_trusted_certs:
+                p = pathlib.Path(cert_path)
+                if p.exists():
+                    authenticode.TRUSTED_CERTIFICATE_STORE.extend(context.FileSystemCertificateStore(location=p, trusted=True))
+                else:
+                    self.log.error("%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
         except ImportError:
             self.log.warning("signify package not installed (unable to import). Reinstall the PEFile service with "
                              "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
@@ -942,14 +962,18 @@ class PEFile(ServiceBase):
                 # Check to see if all of the issuers are the same. If they are, then this is likely self signed
                 # Otherwise, it *may* still be still signed, *or* just signed by a root CA we don't know about
                 if len(cert_list) >= 2:
-                    if all([cert_list[i].issuer == cert_list[i + 1].issuer for i in range(len(cert_list) - 1)]):
+                    if "The X.509 certificate provided is self-signed" in e.message:
+                        res.add_section(
+                            ResultSection(SCORE.VHIGH, "File is self-signed (signing cert signed by itself)"))
+                        in_res.report_heuristic(PEFile.AL_PEFile_006)
+                    elif all([cert_list[i].issuer == cert_list[i + 1].issuer for i in range(len(cert_list) - 1)]):
                         res.add_section(ResultSection(SCORE.VHIGH, "File is self-signed, all certificate issuers match"))
                         in_res.report_heuristic(PEFile.AL_PEFile_003)
                     else:
                         res.add_section(ResultSection(SCORE.HIGH, "Possibly self signed. "
-                                                                 "Could not identify a chain of "
-                                                                 "trust back to a known root CA, but certificates "
-                                                                 "presented were issued by different issuers"))
+                                                                  "Could not identify a chain of "
+                                                                  "trust back to a known root CA, but certificates "
+                                                                  "presented were issued by different issuers"))
                         in_res.report_heuristic(PEFile.AL_PEFile_005)
                 else:
                     res.add_section(ResultSection(SCORE.MED,
@@ -978,6 +1002,9 @@ class PEFile(ServiceBase):
                     res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
                     res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
 
+                    # The thumbprints generated this way match what VirusTotal reports for 'certificate thumbprints'
+                    res.add_tag(TAG_TYPE.CERT_THUMBPRINT, hashlib.sha1(cert.to_der).hexdigest())
+
                 for cert in s.certificates:
                     cert_res = ResultSection(SCORE.NULL, "Certificate Information")
                     # x509 CERTIFICATES
@@ -996,6 +1023,7 @@ class PEFile(ServiceBase):
                     # probably not worth doing tags for all this info?
                     cert_res.add_lines(["CERT_VERSION: %d" % cert.version,
                                         "CERT_SERIAL_NO: %d" % cert.serial_number,
+                                        "CERT_THUMBPRINT: %s" % hashlib.sha1(cert.to_der).hexdigest(),
                                         "CERT_ISSUER: %s" % cert.issuer_dn,
                                         "CERT_SUBJECT: %s" % cert.subject_dn,
                                         "CERT_VALID_FROM: %s" % cert.valid_from.isoformat(),
@@ -1009,15 +1037,7 @@ class PEFile(ServiceBase):
 
                     res.add_section(cert_res)
 
-            # Calculate the CERT_THUMBPRINT as the 'authentihash'
-            # Based on what I could fine online, this seems to normally be
-            # a sha1
-            file_handle.seek(0)
-            authentihash_fingerprint = fingerprinter.AuthenticodeFingerprinter(file_handle)
-            authentihash_fingerprint.add_authenticode_hashers(hashlib.sha1)
-            hashes = authentihash_fingerprint.hashes()
-            sha1_digest = binascii.hexlify(hashes.get("authentihash",{}).get("sha1",""))
-            res.add_tag(TAG_TYPE.CERT_THUMBPRINT, sha1_digest)
+
 
         # pprint.pprint(file_res)
 
