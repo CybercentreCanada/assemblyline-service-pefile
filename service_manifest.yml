@@ -1,0 +1,75 @@
+name: PEFile
+version: 1
+description: >-
+  This service extracts attributes (imports, exports, section names, ...)
+  from windows PE files using the python library pefile.
+
+accepts: executable/windows
+rejects: empty|metadata/.*
+
+stage: CORE
+category: Static Analysis
+
+file_required: true
+timeout: 60
+disable_cache: false
+
+enabled: true
+is_external: false
+licence_count: 0
+
+config:
+  trusted_certs: "/usr/share/ca-certificates/mozilla/"
+
+
+heuristics:
+  - description: >-
+      Signature data found in PE but doesn't match the content.
+      This is either due to malicious copying of signature data or
+      an error in transmission.
+    filetype: "executable/windows"
+    heur_id: 1
+    name: Invalid Signature
+    score:
+
+  - description: This PE appears to have a legitimate signature.
+    filetype: "executable/windows"
+    heur_id: 2
+    name: Legitimately Signed EXE
+    score: 0
+
+  - description: This PE appears is self-signed. All certificates are from the same issuer.
+    filetype: "executable/windows"
+    heur_id: 3
+    name: Self Signed
+    score:
+
+  - description: >-
+      This PE contains at least one section with entropy > 7.5, which
+      may indicate packed or encrypted code.
+
+      (see: http://n10info.blogspot.com/2014/06/entropy-and-distinctive-signs-of-packed.html)
+    filetype: "executable/windows"
+    heur_id: 4
+    name: High section entropy
+    score:
+
+  - description: >-
+      This PE may be self signed. A chain of trust back to a known root CA was not found
+      however certificates presented had different issuers.
+    filetype: "executable/windows"
+    heur_id: 5
+    name: Unknown Root CA
+    score:
+
+  - description: This PE is signed by a certificate which is signed by itself
+    filetype: "executable/windows"
+    heur_id: 6
+    name: Self-signed certificate
+    score:
+
+
+docker_config:
+  image: cccs/assemblyline-service-pefile:latest
+  cpu_cores: 0.2
+  ram_mb: 256

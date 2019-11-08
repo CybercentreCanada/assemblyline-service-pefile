@@ -5,27 +5,26 @@ import hashlib
 import chardet
 import os
 import time
-from cStringIO import StringIO
-from _io import BytesIO
-import binascii
-from pyasn1.codec.der import encoder as der_encoder
+from io import StringIO, BytesIO
 import json
 import re
 import logging
 import traceback
+import pefile
+from signify import signed_pe, fingerprinter, authenticode, context
+import signify
+import pathlib2 as pathlib
+from apiscout import ApiVector
 
 from assemblyline.common.charset import safe_str, translate_str
-from textwrap import dedent
 from assemblyline.common.hexdump import hexdump
-from assemblyline.al.common.result import Result, ResultSection
-from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT, TAG_USAGE
-from assemblyline.al.common.heuristics import Heuristic
-from assemblyline.al.service.base import ServiceBase
-from al_services.alsvc_pefile.LCID import LCID as G_LCID
+from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
+from assemblyline_v4_service.common.base import ServiceBase
+from assemblyline_v4_service.common.result import Result, ResultSection
 from assemblyline.common.entropy import calculate_partition_entropy
-import importlib
 
-
+from pe_file.LCID import LCID as G_LCID
+from pe_file.pyimpfuzzy import pyimpfuzzy
 
 # Some legacy stubs
 def res_txt_tag_charset(text, tag, encoding, confidence, style=None, link=None, alt_text=None):
@@ -52,93 +51,8 @@ PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
 
 class PEFile(ServiceBase):
-    """ This services dumps the PE header and attempts to find
-    some anomalies which could indicate that they are malware related.
-
-    PEiD signature style searching should be done using the yara service"""
-    SERVICE_ACCEPTS = 'executable/windows'
-    SERVICE_CATEGORY = "Static Analysis"
-    SERVICE_DESCRIPTION = "This service extracts imports, exports, section names, ... " \
-                          "from windows PE files using the python library pefile."
-    SERVICE_ENABLED = True
-    SERVICE_REVISION = ServiceBase.parse_revision('$Id$')
-    SERVICE_VERSION = '1'
-    SERVICE_CPU_CORES = 0.2
-    SERVICE_RAM_MB = 256
-
-    SERVICE_DEFAULT_CONFIG = {
-        # this is the default path for root CAs on at least ubuntu 14.04 and 18.04
-        # certs in this list of paths will be added to the trusted roots included with the signify package
-        "trusted_certs": ["/usr/share/ca-certificates/mozilla/"]
-    }
-
-    # Heuristic info
-    AL_PEFile_001 = Heuristic("AL_PEFile_001", "Invalid Signature", "executable/windows",
-                              dedent("""\
-                                         Signature data found in PE but doesn't match the content.
-                                         This is either due to malicious copying of signature data or
-                                         an error in transmission.
-                                         """))
-    AL_PEFile_002 = Heuristic("AL_PEFile_002", "Legitimately Signed EXE", "executable/windows",
-                              dedent("""\
-                                         This PE appears to have a legitimate signature.
-                                         """))
-    AL_PEFile_003 = Heuristic("AL_PEFile_003", "Self Signed", "executable/windows",
-                              dedent("""\
-                                         This PE appears is self-signed. All certificates are from the same issuer.
-                                         """))
-
-    # high section entropy
-    # http://n10info.blogspot.com/2014/06/entropy-and-distinctive-signs-of-packed.html
-    AL_PEFile_004 = Heuristic("AL_PEFile_004", "HighSectionEntropy", "executable/windows",
-                              dedent("""\
-                              This PE contains at least one section with entropy > 7.5, which
-                              may indicate packed or encrypted code"""))
-
-    AL_PEFile_005 = Heuristic("AL_PEFile_005", "UnknownRootCA", "executable/windows",
-                              "This PE may be self signed. A chain of trust back to a known root CA was not found "
-                              "however certificates presented had different issuers")
-    AL_PEFile_006 = Heuristic("AL_PEFile_006", "SelfSignedCert", "executable/windows",
-                              "This PE is signed by a certificate which is signed by itself")
-
-
-    # noinspection PyGlobalUndefined,PyUnresolvedReferences
-    def import_service_deps(self):
-        global pefile, pyimpfuzzy
-        import pefile
-
-        pyimpfuzzy = importlib.import_module("al_services.alsvc_pefile.pyimpfuzzy.pyimpfuzzy")
-
-        try:
-            global signed_pe, signify, fingerprinter
-            from signify import signed_pe, fingerprinter, authenticode, context
-            import signify
-            self.use_signify = True
-
-            import pathlib2 as pathlib
-
-            # Add configured trusted certs
-            more_trusted_certs = self.cfg.get("trusted_certs", self.SERVICE_DEFAULT_CONFIG.get("trusted_certs", []))
-            for cert_path in more_trusted_certs:
-                p = pathlib.Path(cert_path)
-                if p.exists():
-                    authenticode.TRUSTED_CERTIFICATE_STORE.extend(context.FileSystemCertificateStore(location=p, trusted=True))
-                else:
-                    self.log.error("%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
-        except ImportError:
-            self.log.warning("signify package not installed (unable to import). Reinstall the PEFile service with "
-                             "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
-
-        try:
-            global ApiVector
-            from apiscout import ApiVector
-            self.use_apiscout = True
-        except ImportError:
-            self.log.warning("apiscout package not installed (unable to import). Reinstall the PEFile service with "
-                             "/opt/al/assemblyline/al/install/reinstall_service.py PEFile")
-
-    def __init__(self, cfg=None):
-        super(PEFile, self).__init__(cfg)
+    def __init__(self, config=None):
+        super(PEFile, self).__init__(config)
         # Service Initialization
         self.log.debug("LCID DB loaded (%s entries). Running information parsing..." % (len(G_LCID),))
         self.filesize_from_peheader = -1
@@ -156,6 +70,17 @@ class PEFile(ServiceBase):
         self.use_signify = False
         self.use_apiscout = False
         self.apivector = None
+
+        more_trusted_certs = self.config.get("trusted_certs", [])
+        for cert_path in more_trusted_certs:
+            p = pathlib.Path(cert_path)
+            if p.exists():
+                authenticode.TRUSTED_CERTIFICATE_STORE.extend(
+                    context.FileSystemCertificateStore(location=p, trusted=True))
+            else:
+                self.log.error(
+                    "%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
+
 
     def start(self):
 
