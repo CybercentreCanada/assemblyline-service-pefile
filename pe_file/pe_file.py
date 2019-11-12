@@ -145,7 +145,7 @@ class PEFile(ServiceBase):
                 pe_subsec = ResultSection(
                     "%s - Virtual: 0x%08X (0x%08X bytes)"
                     " - Physical: 0x%08X (0x%08X bytes) - "
-                    "hash: %s - entropy: %f " % (sname, section.VirtualAddress, section.Misc_VirtualSize,
+                    "hash: %s - entropy: %f " % (safe_str(sname), section.VirtualAddress, section.Misc_VirtualSize,
                                                  section.PointerToRawData, section.SizeOfRawData,
                                                  sec_md5, round(entropy, 3)),
                     body_format=BODY_FORMAT.GRAPH_DATA,
@@ -194,7 +194,7 @@ class PEFile(ServiceBase):
                 self.file_res.add_section(pe_import_res)
 
                 for entry in self.pe_file.DIRECTORY_ENTRY_IMPORT:
-                    pe_import_dll_res = ResultSection("[%s]" % entry.dll, parent=pe_import_res)
+                    pe_import_dll_res = ResultSection(f"[{safe_str(entry.dll)}]", parent=pe_import_res)
                     first_element = True
                     line = StringIO()
                     for imp in entry.imports:
