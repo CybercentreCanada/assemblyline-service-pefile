@@ -19,7 +19,7 @@ is_external: false
 licence_count: 0
 
 config:
-  trusted_certs: "/usr/share/ca-certificates/mozilla/"
+  trusted_certs: ["/usr/share/ca-certificates/mozilla/"]
 
 
 heuristics:
@@ -30,7 +30,7 @@ heuristics:
     filetype: "executable/windows"
     heur_id: 1
     name: Invalid Signature
-    score:
+    score: 100
 
   - description: This PE appears to have a legitimate signature.
     filetype: "executable/windows"
@@ -42,7 +42,7 @@ heuristics:
     filetype: "executable/windows"
     heur_id: 3
     name: Self Signed
-    score:
+    score: 500
 
   - description: >-
       This PE contains at least one section with entropy > 7.5, which
@@ -52,7 +52,7 @@ heuristics:
     filetype: "executable/windows"
     heur_id: 4
     name: High section entropy
-    score:
+    score: 100
 
   - description: >-
       This PE may be self signed. A chain of trust back to a known root CA was not found
@@ -60,14 +60,25 @@ heuristics:
     filetype: "executable/windows"
     heur_id: 5
     name: Unknown Root CA
-    score:
+    score: 100
 
   - description: This PE is signed by a certificate which is signed by itself
     filetype: "executable/windows"
     heur_id: 6
     name: Self-signed certificate
-    score:
+    score: 500
 
+  - description: This file looks like a PE file but fails to load in the pefile lib
+    filetype: "executable/windows"
+    heur_id: 7
+    name: Invalid PE look-alike
+    score: 100
+
+  - description: This file has less than two certificate. This is probably an error...
+    filetype: "executable/windows"
+    heur_id: 8
+    name: Less than two certificates
+    score: 50
 
 docker_config:
   image: cccs/assemblyline-service-pefile:latest

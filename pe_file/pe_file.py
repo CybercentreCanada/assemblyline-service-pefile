@@ -1,51 +1,27 @@
 from __future__ import absolute_import
 
 import hashlib
+import json
+import os
+import re
+import time
+import traceback
+from io import StringIO, BytesIO
 
 import chardet
-import os
-import time
-from io import StringIO, BytesIO
-import json
-import re
-import logging
-import traceback
-import pefile
-from signify import signed_pe, fingerprinter, authenticode, context
-import signify
 import pathlib2 as pathlib
+import pefile
 from apiscout import ApiVector
-
-from assemblyline.common.charset import safe_str, translate_str
-from assemblyline.common.hexdump import hexdump
-from assemblyline.al.common.result import SCORE, TAG_TYPE, TAG_WEIGHT, TEXT_FORMAT
-from assemblyline_v4_service.common.base import ServiceBase
-from assemblyline_v4_service.common.result import Result, ResultSection
 from assemblyline.common.entropy import calculate_partition_entropy
+from assemblyline.common.hexdump import hexdump
+from assemblyline.common.str_utils import safe_str, translate_str
+from assemblyline_v4_service.common.base import ServiceBase
+from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
+from signify import signed_pe, authenticode, context
+from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, VerificationError
 
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
-
-# Some legacy stubs
-def res_txt_tag_charset(text, tag, encoding, confidence, style=None, link=None, alt_text=None):
-    return res_txt_tag(text + ' - encoding:' + str(encoding) + ' confidence: ' + str(confidence),
-                       tag, style, link, alt_text)
-
-
-# noinspection PyUnusedLocal
-def res_txt_tag(value, tag, style=None, link=None, alt_text=None):
-    return value
-
-
-def make_tag(res, ttype, tag, weight, usage):
-    try:
-        t = str(tag)
-    except:
-        return
-    if 1 < len(t) < 1001:
-        res.add_tag(TAG_TYPE[ttype], t, TAG_WEIGHT[weight], usage=usage)
-    return
-
 
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
@@ -67,9 +43,8 @@ class PEFile(ServiceBase):
         self.patch_section = None
         self.request = None
         self.path = None
-        self.use_signify = False
-        self.use_apiscout = False
         self.apivector = None
+        self.impfuzzy = None
 
         more_trusted_certs = self.config.get("trusted_certs", [])
         for cert_path in more_trusted_certs:
@@ -81,17 +56,15 @@ class PEFile(ServiceBase):
                 self.log.error(
                     "%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
 
-
     def start(self):
-
-        if self.use_apiscout:
-            self.log.info("apiscout appears to be installed, using apiscout")
-            # initialize the apivector object with the vector definition
-            api_vector_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "apivector", "winapi1024v1.txt")
-            self.log.info("Using apivector file: %s" % api_vector_file)
-            if not os.path.exists(api_vector_file) or not os.path.isfile(api_vector_file):
-                self.log.error("There appears to be something wrong with the API vector file definition %s" % api_vector_file)
-            self.apivector = ApiVector.ApiVector(winapi1024_filepath=api_vector_file)
+        self.log.info("apiscout appears to be installed, using apiscout")
+        # initialize the apivector object with the vector definition
+        api_vector_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "apivector", "winapi1024v1.txt")
+        self.log.info("Using apivector file: %s" % api_vector_file)
+        if not os.path.exists(api_vector_file) or not os.path.isfile(api_vector_file):
+            self.log.error("There appears to be something wrong with the "
+                           "API vector file definition %s" % api_vector_file)
+        self.apivector = ApiVector.ApiVector(winapi1024_filepath=api_vector_file)
 
     def get_imphash(self):
         return self.pe_file.get_imphash()
@@ -101,20 +74,25 @@ class PEFile(ServiceBase):
         """Dumps the PE header as Results in the FileResult."""
 
         # PE Header
-        pe_header_res = ResultSection(SCORE['NULL'], "PE: HEADER")
+        pe_header_res = ResultSection("PE: HEADER")
+        if hasattr(self.pe_file, 'OriginalFilename') and len(self.pe_file.OriginalFilename) > 0:
+            pe_header_res.add_line(f"Original Filename: {self.pe_file.OriginalFilename}")
+            pe_header_res.add_tag("file.pe.version.filename", self.pe_file.OriginalFilename)
+        if hasattr(self.pe_file, 'FileDescription') and len(self.pe_file.FileDescription) > 0:
+            pe_header_res.add_line(f"Description: {self.pe_file.FileDescription}")
+            pe_header_res.add_tag("file.pe.version.description", self.pe_file.FileDescription)
 
         # PE Header: Header Info
-        pe_header_info_res = ResultSection(SCORE.NULL, "[HEADER INFO]", parent=pe_header_res)
+        pe_header_info_res = ResultSection("[HEADER INFO]", parent=pe_header_res)
         pe_header_info_res.add_line("Entry point address: 0x%08X" % self.pe_file.OPTIONAL_HEADER.AddressOfEntryPoint)
         pe_header_info_res.add_line("Linker Version: %02d.%02d" % (self.pe_file.OPTIONAL_HEADER.MajorLinkerVersion,
                                                                    self.pe_file.OPTIONAL_HEADER.MinorLinkerVersion))
         pe_header_info_res.add_line("OS Version: %02d.%02d" %
                                     (self.pe_file.OPTIONAL_HEADER.MajorOperatingSystemVersion,
                                      self.pe_file.OPTIONAL_HEADER.MinorOperatingSystemVersion))
-        pe_header_info_res.add_line(["Time Date Stamp: %s (" % time.ctime(self.pe_file.FILE_HEADER.TimeDateStamp),
-                                     res_txt_tag(str(self.pe_file.FILE_HEADER.TimeDateStamp),
-                                                 TAG_TYPE['PE_LINK_TIME_STAMP']),
-                                     ")"])
+        pe_header_info_res.add_line(f"Time Date Stamp: {time.ctime(self.pe_file.FILE_HEADER.TimeDateStamp)}"
+                                    f" ({str(self.pe_file.FILE_HEADER.TimeDateStamp)})")
+        pe_header_info_res.add_tag("file.pe.linker.timestamp", self.pe_file.FILE_HEADER.TimeDateStamp)
         try:
             pe_header_info_res.add_line("Machine Type: %s (%s)" % (
                 hex(self.pe_file.FILE_HEADER.Machine), pefile.MACHINE_TYPE[self.pe_file.FILE_HEADER.Machine]))
@@ -126,18 +104,18 @@ class PEFile(ServiceBase):
         try:
 
             if self.pe_file.RICH_HEADER is not None:
-                pe_rich_header_info = ResultSection(SCORE.NULL, "[RICH HEADER INFO]", parent=pe_header_res)
+                pe_rich_header_info = ResultSection("[RICH HEADER INFO]", parent=pe_header_res)
                 values_list = self.pe_file.RICH_HEADER.values
                 pe_rich_header_info.add_line("VC++ tools used:")
-                for i in range(0, len(values_list) / 2):
+                for i in range(0, int(len(values_list) / 2)):
                     line = "Tool Id: %3d Version: %6d Times used: %3d" % (
                         values_list[2 * i] >> 16, values_list[2 * i] & 0xFFFF, values_list[2 * i + 1])
                     pe_rich_header_info.add_line(line)
-        except:
+        except Exception:
             self.log.exception("Unable to parse PE Rich Header")
 
         # PE Header: Data Directories
-        pe_dd_res = ResultSection(SCORE.NULL, "[DATA DIRECTORY]", parent=pe_header_res)
+        pe_dd_res = ResultSection("[DATA DIRECTORY]", parent=pe_header_res)
         for data_directory in self.pe_file.OPTIONAL_HEADER.DATA_DIRECTORY:
             if data_directory.Size or data_directory.VirtualAddress:
                 pe_dd_res.add_line("%s - va: 0x%08X - size: 0x%08X"
@@ -145,7 +123,7 @@ class PEFile(ServiceBase):
                                       data_directory.VirtualAddress, data_directory.Size))
 
         # PE Header: Sections
-        pe_sec_res = ResultSection(SCORE.NULL, "[SECTIONS]", parent=pe_header_res)
+        pe_sec_res = ResultSection("[SECTIONS]", parent=pe_header_res)
 
         self._init_section_list()
 
@@ -165,25 +143,20 @@ class PEFile(ServiceBase):
                 }
 
                 pe_subsec = ResultSection(
-                    SCORE.NULL,
                     "%s - Virtual: 0x%08X (0x%08X bytes)"
                     " - Physical: 0x%08X (0x%08X bytes) - "
-                    "hash: %s - entropy: %f " %
-                           (sname, section.VirtualAddress, section.Misc_VirtualSize,
-                            section.PointerToRawData, section.SizeOfRawData,
-                            sec_md5, round(entropy, 3)),
-                    self.SERVICE_CLASSIFICATION,
-                    body_format=TEXT_FORMAT.GRAPH_DATA,
+                    "hash: %s - entropy: %f " % (sname, section.VirtualAddress, section.Misc_VirtualSize,
+                                                 section.PointerToRawData, section.SizeOfRawData,
+                                                 sec_md5, round(entropy, 3)),
+                    body_format=BODY_FORMAT.GRAPH_DATA,
                     body=json.dumps(entropy_graph_data))
-                pe_sec_res.add_section(pe_subsec)
+                pe_subsec.add_tag('file.pe.sections.hash', sec_md5)
+                pe_sec_res.add_subsection(pe_subsec)
 
                 if entropy > 7.5:
-                    self.file_res.report_heuristic(PEFile.AL_PEFile_004)
-                    pe_sec_res.add_section(ResultSection(SCORE.HIGH,
-                                                         "%s section has high entropy" % sname))
-
-                # add a search tag for the Section Hash
-                make_tag(self.file_res, 'PE_SECTION_HASH', sec_md5, 'HIGH', usage='CORRELATION')
+                    he_sec = ResultSection("%s section has high entropy" % sname)
+                    he_sec.set_heuristic(4)
+                    pe_sec_res.add_subsection(he_sec)
 
         except AttributeError:
             pass
@@ -193,39 +166,35 @@ class PEFile(ServiceBase):
         # debug
         try:
             if self.pe_file.DebugTimeDateStamp:
-                pe_debug_res = ResultSection(SCORE['NULL'], "PE: DEBUG")
+                pe_debug_res = ResultSection("PE: DEBUG")
                 self.file_res.add_section(pe_debug_res)
 
                 pe_debug_res.add_line("Time Date Stamp: %s" % time.ctime(self.pe_file.DebugTimeDateStamp))
 
-                # When it is a unicode, we know we are coming from RSDS which is UTF-8
-                # otherwise, we come from NB10 and we need to guess the charset.
-                if type(self.pe_file.pdb_filename) != unicode:
-                    char_enc_guessed = translate_str(self.pe_file.pdb_filename)
-                    pdb_filename = char_enc_guessed['converted']
-                else:
-                    char_enc_guessed = {'confidence': 1.0, 'encoding': 'utf-8'}
-                    pdb_filename = self.pe_file.pdb_filename
+                char_enc_guessed = translate_str(self.pe_file.pdb_filename)
+                pdb_filename = char_enc_guessed['converted']
+                pe_debug_res.add_line(f"PDB: {pdb_filename} - encoding:{char_enc_guessed['encoding']} "
+                                      f"confidence:{char_enc_guessed['confidence']}")
+                pe_debug_res.add_tag('file.pe.pdb_filename', pdb_filename)
 
-                pe_debug_res.add_line(["PDB: '",
-                                       res_txt_tag_charset(pdb_filename,
-                                                           TAG_TYPE['PE_PDB_FILENAME'],
-                                                           char_enc_guessed['encoding'],
-                                                           char_enc_guessed['confidence']),
-                                       "'"])
-
-                # self.log.debug(u"\tPDB: %s" % pdb_filename)
         except AttributeError:
             pass
 
         # imports
         try:
             if hasattr(self.pe_file, 'DIRECTORY_ENTRY_IMPORT') and len(self.pe_file.DIRECTORY_ENTRY_IMPORT) > 0:
-                pe_import_res = ResultSection(SCORE['NULL'], "PE: IMPORTS")
+                pe_import_res = ResultSection("PE: IMPORTS")
+
+                pe_import_res.add_tag('file.pe.imports.sorted_sha1', self.get_import_hash())
+                imphash = self.get_imphash()
+                if imphash != '':
+                    pe_import_res.add_tag('file.pe.imports.md5', imphash)
+                pe_import_res.add_tag('file.pe.imports.fuzzy', self.impfuzzy.get_impfuzzy(sort=False))
+                pe_import_res.add_tag('file.pe.imports.sorted_fuzzy', self.impfuzzy.get_impfuzzy(sort=True))
                 self.file_res.add_section(pe_import_res)
 
                 for entry in self.pe_file.DIRECTORY_ENTRY_IMPORT:
-                    pe_import_dll_res = ResultSection(SCORE.NULL, "[%s]" % entry.dll, parent=pe_import_res)
+                    pe_import_dll_res = ResultSection("[%s]" % entry.dll, parent=pe_import_res)
                     first_element = True
                     line = StringIO()
                     for imp in entry.imports:
@@ -237,12 +206,12 @@ class PEFile(ServiceBase):
                         if imp.name is None:
                             line.write(str(imp.ordinal))
                         else:
-                            line.write(imp.name)
+                            line.write(imp.name.decode())
 
                     pe_import_dll_res.add_line(line.getvalue())
 
             else:
-                pe_import_res = ResultSection(SCORE['NULL'], "PE: NO IMPORTS DETECTED ")
+                pe_import_res = ResultSection("PE: NO IMPORTS DETECTED ")
                 self.file_res.add_section(pe_import_res)
 
         except AttributeError:
@@ -251,22 +220,20 @@ class PEFile(ServiceBase):
         # exports
         try:
             if self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp is not None:
-                pe_export_res = ResultSection(SCORE['NULL'], "PE: EXPORTS")
-                self.file_res.add_section(pe_export_res)
-
+                pe_export_res = ResultSection("PE: EXPORTS")
                 # noinspection PyBroadException
                 try:
-                    pe_export_res.add_line(["Module Name: ",
-                                            res_txt_tag(safe_str(self.pe_file.ModuleName),
-                                                        TAG_TYPE['PE_EXPORT_MODULE_NAME'])])
-                except:
+                    pe_export_res.add_line(f"Module Name: {safe_str(self.pe_file.ModuleName)}")
+                    pe_export_res.add_tag('file.string.extracted', safe_str(self.pe_file.ModuleName))
+                    pe_export_res.add_tag('file.pe.exports.module_name', safe_str(self.pe_file.ModuleName))
+                except Exception:
                     pass
 
                 if self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp == 0:
                     pe_export_res.add_line("Time Date Stamp: 0")
                 else:
-                    pe_export_res.add_line("Time Date Stamp: %s"
-                                           % time.ctime(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp))
+                    pe_export_res.add_line(f"Time Date Stamp: "
+                                           f"{time.ctime(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp)}")
 
                 first_element = True
                 txt = []
@@ -278,17 +245,19 @@ class PEFile(ServiceBase):
 
                     txt.append(str(exp.ordinal))
                     if exp.name is not None:
-                        txt.append(": ")
-                        txt.append(res_txt_tag(exp.name, TAG_TYPE['PE_EXPORT_FCT_NAME']))
+                        txt.append(f": {safe_str(exp.name)}")
+                        pe_export_res.add_tag('file.pe.exports.function_name', safe_str(exp.name))
 
                 pe_export_res.add_line(txt)
+
+                self.file_res.add_section(pe_export_res)
         except AttributeError:
             pass
 
         # resources
         try:
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
-                pe_resource_res = ResultSection(SCORE['NULL'], "PE: RESOURCES")
+                pe_resource_res = ResultSection("PE: RESOURCES")
                 self.file_res.add_section(pe_resource_res)
 
                 for res_entry in self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries:
@@ -296,7 +265,7 @@ class PEFile(ServiceBase):
                         # noinspection PyBroadException
                         try:
                             entry_name = pefile.RESOURCE_TYPE[res_entry.id]
-                        except:
+                        except Exception:
                             # pylint: disable-msg=W0702
                             # unfortunately this code was done before we started to really care about which
                             # exception to catch so, I actually don't really know at this point, would need to try
@@ -304,10 +273,13 @@ class PEFile(ServiceBase):
                             entry_name = "UNKNOWN"
                     else:
                         entry_name = res_entry.name
+                        pe_resource_res.add_tag('file.pe.resources.name', entry_name)
 
                     for name_id in res_entry.directory.entries:
                         if name_id.name is None:
                             name_id.name = hex(name_id.id)
+                        else:
+                            pe_resource_res.add_tag('file.pe.resources.name', name_id.name)
 
                         for language in name_id.directory.entries:
                             try:
@@ -319,16 +291,14 @@ class PEFile(ServiceBase):
                             if res_entry.name is None:
                                 line.append(entry_name)
                             else:
-                                line.append(res_txt_tag(str(entry_name), TAG_TYPE['PE_RESOURCE_NAME']))
+                                line.append(str(entry_name))
 
                             line.append(" " + str(name_id.name) + " ")
                             line.append("0x")
                             # this will add a link to search in AL for the value
-                            line.append(res_txt_tag("%04X" % language.id, TAG_TYPE['PE_RESOURCE_LANGUAGE']))
+                            line.append("%04X" % language.id)
+                            pe_resource_res.add_tag('file.pe.resources.language', "%04X" % language.id)
                             line.append(" (%s)" % language_desc)
-
-                            make_tag(self.file_res, 'PE_RESOURCE_LANGUAGE', language.id,
-                                     weight='LOW', usage='IDENTIFICATION')
 
                             # get the size of the resource
                             res_size = language.data.struct.Size
@@ -347,9 +317,10 @@ class PEFile(ServiceBase):
             for file_info in self.pe_file.FileInfo:
                 if file_info.name == "StringFileInfo":
                     if len(file_info.StringTable) > 0:
-                        pe_resource_verinfo_res = ResultSection(SCORE['NULL'], "PE: RESOURCES-VersionInfo")
+                        pe_resource_verinfo_res = ResultSection("PE: RESOURCES-VersionInfo")
                         self.file_res.add_section(pe_resource_verinfo_res)
 
+                        lang_id = None
                         try:
                             if "LangID" in file_info.StringTable[0].entries:
                                 lang_id = file_info.StringTable[0].get("LangID")
@@ -361,18 +332,16 @@ class PEFile(ServiceBase):
                                     txt = ('LangId: ' + lang_id + " (NEUTRAL)")
                                     pe_resource_verinfo_res.add_line(txt)
                         except (ValueError, KeyError):
-                            txt = ('LangId: %s is invalid' % lang_id)
-                            pe_resource_verinfo_res.add_line(txt)
+                            if lang_id is not None:
+                                pe_resource_verinfo_res.add_line(f'LangId: {lang_id} is invalid')
 
                         for entry in file_info.StringTable[0].entries.items():
-                            txt = ['%s: ' % entry[0]]
+                            txt = f'{entry[0]}: {entry[1]}'
 
                             if entry[0] == 'OriginalFilename':
-                                txt.append(res_txt_tag(entry[1], TAG_TYPE['PE_VERSION_INFO_ORIGINAL_FILENAME']))
+                                pe_resource_verinfo_res.add_tag('file.pe.version.filename', entry[1])
                             elif entry[0] == 'FileDescription':
-                                txt.append(res_txt_tag(entry[1], TAG_TYPE['PE_VERSION_INFO_FILE_DESCRIPTION']))
-                            else:
-                                txt.append(entry[1])
+                                pe_resource_verinfo_res.add_tag('file.pe.version.description', entry[1])
 
                             pe_resource_verinfo_res.add_line(txt)
 
@@ -560,8 +529,8 @@ class PEFile(ServiceBase):
                                 except KeyError:
                                     comment = "%s (id:%s - lang_id:0x%04X [Unknown language])" % (
                                         str(dir_type.name), str(nameID.name), language.id)
-                                res = ResultSection(SCORE['NULL'], "PE: STRINGS - %s" % comment)
-                                for idx in xrange(len(strings)):
+                                res_strings = ResultSection("PE: STRINGS - %s" % comment)
+                                for idx in range(len(strings)):
                                     # noinspection PyBroadException
                                     try:
                                         tag_value = strings[idx][1]
@@ -572,28 +541,25 @@ class PEFile(ServiceBase):
 
                                         tag_value = tag_value.replace('\r', ' ').replace('\n', ' ')
                                         if strings[idx][0] is not None:
-                                            res.add_line(
-                                                [strings[idx][0], ": ",
-                                                 res_txt_tag(tag_value, TAG_TYPE['FILE_STRING'])])
+                                            res_strings.add_line(f"{strings[idx][0]}: {tag_value}")
                                         else:
-                                            res.add_line(res_txt_tag(tag_value, TAG_TYPE['FILE_STRING']))
+                                            res_strings.add_line(tag_value)
 
-                                        make_tag(self.file_res, 'FILE_STRING', tag_value, weight='NULL',
-                                                 usage='IDENTIFICATION')
+                                        res_strings.add_tag('file.string.extracted', tag_value)
 
                                         success = True
-                                    except:
+                                    except Exception:
                                         pass
                                 if success:
-                                    self.file_res.add_section(res)
+                                    self.file_res.add_section(res_strings)
                 else:
                     pass
 
-        except AttributeError, e:
+        except AttributeError as e:
             self.log.debug("\t Error parsing output: " + repr(e))
 
-        except Exception, e:
-            print e
+        except Exception as e:
+            self.log.exception(e)
 
         # print slack space if it exists
         if (self.print_slack and self.filesize_from_peheader > 0 and (
@@ -604,12 +570,11 @@ class PEFile(ServiceBase):
                 slack_size = len(self.pe_file.__data__) - self.filesize_from_peheader
                 if slack_size > length_to_display:
                     length_display_str = "- displaying first %d bytes" % length_to_display
-                pe_slack_space_res = ResultSection(SCORE['NULL'],
-                                                   "PE: SLACK SPACE (The file contents after the PE file size ends) "
+                pe_slack_space_res = ResultSection("PE: SLACK SPACE (The file contents after the PE file size ends) "
                                                    "[%d bytes] %s" % (
                                                        len(self.pe_file.__data__) - self.filesize_from_peheader,
                                                        length_display_str),
-                                                   body_format=TEXT_FORMAT['MEMORY_DUMP'])
+                                                   body_format=BODY_FORMAT['MEMORY_DUMP'])
                 pe_slack_space_res.add_line(hexdump(
                     self.pe_file.__data__[self.filesize_from_peheader:self.filesize_from_peheader + length_to_display]))
                 self.file_res.add_section(pe_slack_space_res)
@@ -620,7 +585,7 @@ class PEFile(ServiceBase):
             self._sect_list = []
             try:
                 for section in self.pe_file.sections:
-                    zero_idx = section.Name.find(chr(0x0))
+                    zero_idx = section.Name.find(chr(0x0).encode())
                     if not zero_idx == -1:
                         sname = section.Name[:zero_idx]
                     else:
@@ -635,7 +600,8 @@ class PEFile(ServiceBase):
         try:
             section = self.pe_file.get_section_by_rva(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.Name)
             offset = section.get_offset_from_rva(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.Name)
-            self.pe_file.ModuleName = self.pe_file.__data__[offset:offset + self.pe_file.__data__[offset:].find(chr(0))]
+            self.pe_file.ModuleName = self.pe_file.__data__[offset:offset +
+                                                            self.pe_file.__data__[offset:].find(chr(0).encode())]
         except AttributeError:
             pass
 
@@ -652,83 +618,16 @@ class PEFile(ServiceBase):
                             sorted_import_list.append(imp.name)
 
                 sorted_import_list.sort()
-                self.import_hash = hashlib.sha1(" ".join(sorted_import_list)).hexdigest()
+                self.import_hash = hashlib.sha1(b" ".join(sorted_import_list)).hexdigest()
         except AttributeError:
             pass
 
         return self.import_hash
 
-    def auto_generate_tags(self, file_res):
-
-        try:
-            make_tag(file_res, 'FILE_NAME', self.pe_file.ModuleName, weight='MED', usage="CORRELATION")
-
-            make_tag(file_res, 'PE_EXPORT_MODULE_NAME', self.pe_file.ModuleName, weight='HIGH', usage="CORRELATION")
-        except:
-            pass
-
-        make_tag(file_res, 'PE_LINK_TIME_STAMP', self.pe_file.FILE_HEADER.TimeDateStamp, weight='HIGH',
-                 usage="CORRELATION")
-        try:
-            # When it is a unicode, we know we are coming from RSDS which is UTF-8
-            # otherwise, we come from NB10 and we need to guess the charset.
-            if type(self.pe_file.pdb_filename) != unicode:
-                char_enc_guessed = translate_str(self.pe_file.pdb_filename)
-                pdb_filename = char_enc_guessed['converted']
-            else:
-                pdb_filename = self.pe_file.pdb_filename
-
-            make_tag(file_res, 'PE_PDB_FILENAME', pdb_filename, weight='HIGH', usage="CORRELATION")
-        except AttributeError:
-            pass
-
-        try:
-            if len(self.pe_file.OriginalFilename) > 0:
-                make_tag(file_res, 'PE_VERSION_INFO_ORIGINAL_FILENAME', self.pe_file.OriginalFilename, weight='HIGH',
-                         usage="CORRELATION")
-        except AttributeError:
-            pass
-
-        try:
-            if len(self.pe_file.FileDescription) > 0:
-                make_tag(file_res, 'PE_VERSION_INFO_FILE_DESCRIPTION', self.pe_file.FileDescription, weight='HIGH',
-                         usage="CORRELATION")
-        except AttributeError:
-            pass
-
-        # We have always been sorting them and storing the sorted hash, but we have added
-        # unsorted MD5-hash (which is provided by PEFILE) so this has been renamed
-        if self.get_import_hash() is not None:
-            make_tag(file_res, 'PE_IMPORT_SORTED_SHA1', self.get_import_hash(), weight='HIGH', usage="CORRELATION")
-
-        imphash = self.get_imphash()
-        if imphash != '':
-            make_tag(file_res, 'PE_IMPORT_MD5', imphash, weight='HIGH', usage="CORRELATION")
-
-        try:
-            if self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.TimeDateStamp:
-                for exp in self.pe_file.DIRECTORY_ENTRY_EXPORT.symbols:
-                    if exp.name is not None:
-                        make_tag(file_res, 'PE_EXPORT_FCT_NAME', exp.name, weight='HIGH', usage="CORRELATION")
-        except AttributeError:
-            pass
-
-        try:
-            if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
-                for res_entry in self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries:
-                    if res_entry.name is not None:
-                        make_tag(file_res, 'PE_RESOURCE_NAME', res_entry.name, weight='HIGH', usage="CORRELATION")
-
-                    for name_id in res_entry.directory.entries:
-                        if name_id.name is not None:
-                            make_tag(file_res, 'PE_RESOURCE_NAME', name_id.name, weight='HIGH', usage="CORRELATION")
-        except AttributeError:
-            pass
-
     def execute(self, request):
         request.result = Result()
         self.file_res = request.result
-        self.path = request.download()
+        self.path = request.file_path
         filename = os.path.basename(self.path)
         self.request = request
 
@@ -742,256 +641,173 @@ class PEFile(ServiceBase):
         self.patch_section = None
         self.filesize_from_peheader = -1
 
-        with open(self.path, 'r') as f:
+        with open(self.path, 'rb') as f:
             file_content = f.read()
+
+        self.impfuzzy = pyimpfuzzy.pefileEx(data=file_content)
 
         try:
             self.pe_file = pefile.PE(data=file_content)
-        except pefile.PEFormatError, e:
+        except pefile.PEFormatError as e:
             if e.value != "DOS Header magic not found.":
-                res = ResultSection(SCORE['HIGH'],
-                                    ["WARNING: this file looks like a PE but failed loading inside PE file. [", e.value,
-                                     "]"])
-                self.file_res.add_section(res)
+                res_load_failed = ResultSection(f"WARNING: this file looks like a PE but failed "
+                                                f"loading inside PE file. [{e.value}]")
+                res_load_failed.set_heuristic(6)
+                self.file_res.add_section(res_load_failed)
             self.log.debug(e)
 
         if self.pe_file is not None:
-
-            # This is just to get pylint to stop complaining about those member variables not being available.
-            if False:
-                self.pe_file.DebugTimeDateStamp = None
-                self.pe_file.DIRECTORY_ENTRY_EXPORT = None
-                self.pe_file.DIRECTORY_ENTRY_IMPORT = None
-                self.pe_file.DIRECTORY_ENTRY_RESOURCE = None
-                self.pe_file.pdb_filename = None
-                self.pe_file.OPTIONAL_HEADER.AddressOfEntryPoint = None
-                self.pe_file.FILE_HEADER.Machine = None
-                self.pe_file.OPTIONAL_HEADER.DATA_DIRECTORY = None
-                self.pe_file.OPTIONAL_HEADER.MajorLinkerVersion = None
-                self.pe_file.OPTIONAL_HEADER.MinorLinkerVersion = None
-                self.pe_file.OPTIONAL_HEADER.MajorOperatingSystemVersion = None
-                self.pe_file.OPTIONAL_HEADER.MinorOperatingSystemVersion = None
-                self.pe_file.FILE_HEADER.TimeDateStamp = None
-                self.pe_file.DIRECTORY_ENTRY_DEBUG = None
-                self.pe_file.OPTIONAL_HEADER.CheckSum = None
-                self.pe_file.OPTIONAL_HEADER.ImageBase = None
-                self.pe_file.OPTIONAL_HEADER.MajorImageVersion = None
-                self.pe_file.OPTIONAL_HEADER.MinorImageVersion = None
-                self.pe_file.OPTIONAL_HEADER.Subsystem = None
-                self.pe_file.OriginalFilename = None
-                self.pe_file.FileDescription = None
-                self.pe_file.ModuleName = None
-
             self.get_export_module_name()
-
-            # Auto generate signatures...
-            self.auto_generate_tags(self.file_res)
-
-            # Here is general PE info
             self.get_pe_info(G_LCID)
+            self.get_signature_information(BytesIO(file_content))
+            self.get_api_vector()
 
-            file_io = BytesIO(file_content)
+    def get_api_vector(self):
+        # We need to do a bit of manipulation on the list of API calls to normalize to
+        # the format that apiscout/apivector expects, notably (from apivector blog post)
+        # We drop the string type, i.e. A or W if applicable
+        # We ignore MSVCRT versions, i.e. msvcrt80.dll!time becoming msvcrt.dll!time
+        apilist = (x.replace(".", "!").rstrip("aw") for x in self.impfuzzy.calc_impfuzzy(return_list=True))
+        apilist2 = [re.sub("msvcrt[0-9]+!", "msvcrt!", x) for x in apilist]
+        apivector = self.apivector.getApiVectorFromApiList(apilist2)
 
-            extracted_data = None
+        api_vectors_res = ResultSection("API Vectors")
+        # apivector is given as something like:
+        # {'user_list': {'in_api_vector': 2,
+        #                'num_unique_apis': 2,
+        #                'percentage': 100.0,
+        #                'vector': 'A40BA93QA36'}}
+        api_vectors_res.add_line(f"in_api_vector: {apivector.get('user_list', {}).get('in_api_vector', 0)}")
+        api_vectors_res.add_line(f"num_unique_apis: {apivector.get('user_list', {}).get('num_unique_apis', 0)}")
+        api_vectors_res.add_line(f"vector: {apivector.get('user_list', {}).get('vector', '')}")
+
+        # For the sake of tagging, we'll just make it a colon separated string of
+        # in_api_vector:num_unique_apis:vector
+        # (omitting the percentage, since that's easy to recalculate)
+        apivector_str = "%d:%d:%s" % (
+            apivector.get("user_list", {}).get("in_api_vector", 0),
+            apivector.get("user_list", {}).get("num_unique_apis", 0),
+            apivector.get("user_list", {}).get("vector", "")
+        )
+        api_vectors_res.add_tag("file.pe.api_vector", apivector_str)
+        self.file_res.add_section(api_vectors_res)
+
+    def get_signature_information(self, file_handle):
+        # noinspection PyBroadException
+        try:
+            res = ResultSection("Signature Information")
+
+            # first, let's try parsing the file
+            # noinspection PyBroadException
             try:
-                extracted_data = PEFile.get_signify(file_io, self.file_res, self.log)
-            except Exception as e:
-                res = ResultSection(SCORE.NULL, "Error trying to check for PE signatures")
-                res.add_line("Traceback:")
-                res.add_lines(traceback.format_exc().splitlines())
+                s_data = signed_pe.SignedPEFile(file_handle)
+            except Exception:
+                self.log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
+                return
 
-                self.file_res.add_section(res)
+            # Now try checking for verification
+            try:
+                s_data.verify()
 
-            # Add fuzzy hash
-            impfuzzy_pefile = pyimpfuzzy.pefileEx(data=file_content)
-            # fuzzy_import = pyimpfuzzy.get_impfuzzy_data(file_content, sort=False)
-            # fuzzy_import_sorted = pyimpfuzzy.get_impfuzzy_data(file_content, sort=True)
-            fuzzy_import = impfuzzy_pefile.get_impfuzzy(sort=False)
-            fuzzy_import_sorted = impfuzzy_pefile.get_impfuzzy(sort=True)
-            self.file_res.add_tag(TAG_TYPE.PE_IMPORT_FUZZY, fuzzy_import)
-            self.file_res.add_tag(TAG_TYPE.PE_IMPORT_SORTED_FUZZY, fuzzy_import_sorted)
+                # signature is verified
+                res.add_subsection(ResultSection("This file is signed", heuristic=Heuristic(2)))
+            except SignedPEParseError as e:
+                if str(e) == "The PE file does not contain a certificate table.":
+                    res.add_subsection(ResultSection("No file signature data found"))
 
-            # Calculate the apivector if apiscout is installed
-            if self.use_apiscout:
-                # self.log.info("getting apivector..")
-                # We need to do a bit of manipulation on the list of API calls to normalize to
-                # the format that apiscout/apivector expects, notably (from apivector blog post)
-                # We drop the string type, i.e. A or W if applicable
-                # We ignore MSVCRT versions, i.e. msvcrt80.dll!time becoming msvcrt.dll!time
-                apilist = (x.replace(".","!").rstrip("aw") for x in impfuzzy_pefile.calc_impfuzzy(return_list=True))
-                apilist2 = [re.sub("msvcrt[0-9]+!", "msvcrt!", x) for x in apilist]
-                apivector = self.apivector.getApiVectorFromApiList(apilist2)
-
-                # apivector is given as something like:
-                # {'user_list': {'in_api_vector': 2,
-                #                'num_unique_apis': 2,
-                #                'percentage': 100.0,
-                #                'vector': 'A40BA93QA36'}}
-                # So for the sake of tagging, we'll just make it a colon separated string of
-                # in_api_vector:num_unique_apis:vector
-                # (omitting the percentage, since that's easy to recalculate)
-                apivector_str = "%d:%d:%s" % (
-                    apivector.get("user_list",{}).get("in_api_vector",0),
-                    apivector.get("user_list", {}).get("num_unique_apis", 0),
-                    apivector.get("user_list", {}).get("vector", "")
-                )
-                # self.log.info("got apivector str: %s" % apivector_str)
-                self.file_res.add_tag(TAG_TYPE.PE_APIVECTOR, apivector_str)
-
-    @staticmethod
-    def get_signify(file_handle, in_res, log = None):
-
-        res = ResultSection(SCORE.NULL, "Signature Information")
-        in_res.add_section(res)
-
-        if log == None:
-            log = logging.getLogger("get_signify")
-        else:
-            log = log.getChild("get_signify")
-
-        # first, let's try parsing the file
-        try:
-            s_data = signed_pe.SignedPEFile(file_handle)
-        except Exception as e:
-            log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
-
-        # Now try checking for verification
-        try:
-            s_data.verify()
-
-            # signature is verified
-            res.add_section(ResultSection(SCORE.OK, "This file is signed"))
-            in_res.report_heuristic(PEFile.AL_PEFile_002)
-
-        except signify.exceptions.SignedPEParseError as e:
-            if e.message == "The PE file does not contain a certificate table.":
-                res.add_section(ResultSection(SCORE.NULL, "No file signature data found"))
-
-            else:
-                res.add_section(ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
-
-        except signify.exceptions.AuthenticodeVerificationError as e:
-            if e.message == "The expected hash does not match the digest in SpcInfo":
-                # This sig has been copied from another program
-                res.add_section(ResultSection(SCORE.HIGH, "The signature does not match the program data"))
-                in_res.report_heuristic(PEFile.AL_PEFile_001)
-            else:
-                res.add_section(ResultSection(SCORE.NULL, "Unknown authenticode exception. Traceback: %s" % traceback.format_exc()))
-
-        except signify.exceptions.VerificationError as e:
-            if e.message.startswith("Chain verification from"):
-                # probably self signed, but maybe we just don't have the root CA
-                flatten = lambda l: [item for sublist in l for item in sublist]
-                cert_list = flatten([x.certificates for x in s_data.signed_datas])
-
-                # Check to see if all of the issuers are the same. If they are, then this is likely self signed
-                # Otherwise, it *may* still be still signed, *or* just signed by a root CA we don't know about
-                if len(cert_list) >= 2:
-                    if "The X.509 certificate provided is self-signed" in e.message:
-                        res.add_section(
-                            ResultSection(SCORE.VHIGH, "File is self-signed (signing cert signed by itself)"))
-                        in_res.report_heuristic(PEFile.AL_PEFile_006)
-                    elif all([cert_list[i].issuer == cert_list[i + 1].issuer for i in range(len(cert_list) - 1)]):
-                        res.add_section(ResultSection(SCORE.VHIGH, "File is self-signed, all certificate issuers match"))
-                        in_res.report_heuristic(PEFile.AL_PEFile_003)
-                    else:
-                        res.add_section(ResultSection(SCORE.HIGH, "Possibly self signed. "
-                                                                  "Could not identify a chain of "
-                                                                  "trust back to a known root CA, but certificates "
-                                                                  "presented were issued by different issuers"))
-                        in_res.report_heuristic(PEFile.AL_PEFile_005)
                 else:
-                    res.add_section(ResultSection(SCORE.MED,
-                                                  "This is probably an error. Less than 2 certificates were found"))
-            else:
-                res.add_section(
-                    ResultSection(SCORE.NULL, "Unknown exception. Traceback: %s" % traceback.format_exc()))
+                    res.add_subsection("Unknown exception. Traceback: %s" % traceback.format_exc())
+                self.file_res.add_section(res)
+                return
+            except AuthenticodeVerificationError as e:
+                if str(e) == "The expected hash does not match the digest in SpcInfo":
+                    # This sig has been copied from another program
+                    res.add_subsection(ResultSection("The signature does not match the program data",
+                                                     heuristic=Heuristic(1)))
+                else:
+                    res.add_subsection(ResultSection(f"Unknown authenticode exception. "
+                                                     f"Traceback: {traceback.format_exc()}"))
+                self.file_res.add_section(res)
+                return
+            except VerificationError as e:
+                ex = str(e)
+                if ex.startswith("Chain verification from"):
+                    # probably self signed, but maybe we just don't have the root CA
+                    flatten = lambda l: [item for sublist in l for item in sublist]
+                    cert_list = flatten([x.certificates for x in s_data.signed_datas])
 
-        # Now try to get certificate and signature data
-        sig_datas = []
-        try:
-            sig_datas.extend([x for x in s_data.signed_datas])
-        except:
-            pass
+                    # Check to see if all of the issuers are the same. If they are, then this is likely self signed
+                    # Otherwise, it *may* still be still signed, *or* just signed by a root CA we don't know about
+                    if len(cert_list) >= 2:
+                        if "The X.509 certificate provided is self-signed" in ex:
+                            res.add_subsection(
+                                ResultSection("File is self-signed (signing cert signed by itself)",
+                                              heuristic=Heuristic(6)))
+                        elif all([cert_list[i].issuer == cert_list[i + 1].issuer for i in range(len(cert_list) - 1)]):
+                            res.add_subsection(ResultSection("File is self-signed, all certificate issuers match",
+                                                             heuristic=Heuristic(3)))
+                        else:
+                            res.add_subsection(ResultSection("Possibly self signed. "
+                                                             "Could not identify a chain of "
+                                                             "trust back to a known root CA, but certificates "
+                                                             "presented were issued by different issuers",
+                                                             heuristic=Heuristic(5)))
+                    else:
+                        res.add_subsection(
+                            ResultSection("This is probably an error. Less than 2 certificates were found",
+                                          heuristic=Heuristic(8)))
+                else:
+                    res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
+                self.file_res.add_section(res)
+                return
 
-        if len(sig_datas) > 0:
-            # Now extract certificate data from the sig
-            for s in sig_datas:
-                # Extract signer info. This is probably the most useful?
-                res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(s.signer_info.serial_number))
-                res.add_tag(TAG_TYPE.CERT_ISSUER, s.signer_info.issuer_dn)
+            # Now try to get certificate and signature data
+            sig_datas = [x for x in s_data.signed_datas]
 
-                # Get cert used for signing, then add valid from/to info
-                for cert in [x for x in s.certificates if x.serial_number == s.signer_info.serial_number]:
-                    res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
-                    res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
-                    res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
+            if len(sig_datas) > 0:
+                # Now extract certificate data from the sig
+                for s in sig_datas:
+                    signer_res = ResultSection("Signer Information")
+                    res.add_subsection(signer_res)
 
-                    # The thumbprints generated this way match what VirusTotal reports for 'certificate thumbprints'
-                    res.add_tag(TAG_TYPE.CERT_THUMBPRINT, hashlib.sha1(cert.to_der).hexdigest())
+                    signer_res.add_lines([f"Serial No: {str(s.signer_info.serial_number)}",
+                                          f"Issuer: {s.signer_info.issuer_dn}"])
 
-                for cert in s.certificates:
-                    cert_res = ResultSection(SCORE.NULL, "Certificate Information")
-                    # x509 CERTIFICATES
-                    # ('CERT_VERSION', 230),
-                    # ('CERT_SERIAL_NO', 231),
-                    # ('CERT_SIGNATURE_ALGO', 232),
-                    # ('CERT_ISSUER', 233),
-                    # ('CERT_VALID_FROM', 234),
-                    # ('CERT_VALID_TO', 235),
-                    # ('CERT_SUBJECT', 236),
-                    # ('CERT_KEY_USAGE', 237),
-                    # ('CERT_EXTENDED_KEY_USAGE', 238),
-                    # ('CERT_SUBJECT_ALT_NAME', 239),
-                    # ('CERT_THUMBPRINT', 240),
+                    # Extract signer info. This is probably the most useful?
+                    signer_res.add_tag("cert.serial_no", str(s.signer_info.serial_number))
+                    signer_res.add_tag("cert.issuer", s.signer_info.issuer_dn)
 
-                    # probably not worth doing tags for all this info?
-                    cert_res.add_lines(["CERT_VERSION: %d" % cert.version,
-                                        "CERT_SERIAL_NO: %d" % cert.serial_number,
-                                        "CERT_THUMBPRINT: %s" % hashlib.sha1(cert.to_der).hexdigest(),
-                                        "CERT_ISSUER: %s" % cert.issuer_dn,
-                                        "CERT_SUBJECT: %s" % cert.subject_dn,
-                                        "CERT_VALID_FROM: %s" % cert.valid_from.isoformat(),
-                                        "CERT_VALID_TO: %s" % cert.valid_to.isoformat()])
-                    # cert_res.add_tag(TAG_TYPE.CERT_VERSION, str(cert.version))
-                    # cert_res.add_tag(TAG_TYPE.CERT_SERIAL_NO, str(cert.serial_number))
-                    # cert_res.add_tag(TAG_TYPE.CERT_ISSUER, cert.issuer_dn)
-                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_FROM, cert.valid_from.isoformat())
-                    # cert_res.add_tag(TAG_TYPE.CERT_VALID_TO, cert.valid_to.isoformat())
-                    # cert_res.add_tag(TAG_TYPE.CERT_SUBJECT, cert.subject_dn)
+                    # Get cert used for signing, then add valid from/to info
+                    for cert in [x for x in s.certificates if x.serial_number == s.signer_info.serial_number]:
+                        signer_res.add_lines([f"Subject: {cert.subject_dn}",
+                                              f"Valid From: {cert.valid_from.isoformat()}",
+                                              f"Valid To: {cert.valid_to.isoformat()}",
+                                              f"Thumbprint: {hashlib.sha1(cert.to_der).hexdigest()}"])
 
-                    res.add_section(cert_res)
+                        signer_res.add_tag("cert.subject", cert.subject_dn)
+                        signer_res.add_tag("cert.valid.start", cert.valid_from.isoformat())
+                        signer_res.add_tag("cert.valid.end", cert.valid_to.isoformat())
 
+                        # The thumbprints generated this way match what VirusTotal reports for 'certificate thumbprints'
+                        signer_res.add_tag("cert.thumbprint", hashlib.sha1(cert.to_der).hexdigest())
+                        break
 
+                    for cert in s.certificates:
+                        cert_res = ResultSection("Certificate Information")
 
-        # pprint.pprint(file_res)
+                        # probably not worth doing tags for all this info?
+                        cert_res.add_lines(["Version: %d" % cert.version,
+                                            "Serial No: %d" % cert.serial_number,
+                                            "Thumbprint: %s" % hashlib.sha1(cert.to_der).hexdigest(),
+                                            "Issuer: %s" % cert.issuer_dn,
+                                            "Subject: %s" % cert.subject_dn,
+                                            "Valid From: %s" % cert.valid_from.isoformat(),
+                                            "Valid To: %s" % cert.valid_to.isoformat()])
 
+                        signer_res.add_subsection(cert_res)
+        except Exception:
+            res = ResultSection("Error trying to check for PE signatures")
+            res.add_line("Traceback:")
+            res.add_lines(traceback.format_exc().splitlines())
 
-if __name__ == "__main__":
-
-    import sys
-
-    from signify import signed_pe
-    import signify
-
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(name)s %(levelname)s %(message)s')
-
-    file_io = BytesIO(open(sys.argv[1],"rb").read())
-    res = Result()
-    PEFile.get_signify(file_io, res)
-    # try:
-    #     s_data = signed_pe.SignedPEFile(file_io)
-    # except Exception as e:
-    #     print "Exception parsing data"
-    #     traceback.print_exc()
-    #     msg = e.message
-    #
-    # try:
-    #     s_data.verify()
-    # except Exception as e:
-    #     traceback.print_exc()
-    #     print "====="
-    #     print e.message
-    #
-    # pprint.pprint(s_data)
+        self.file_res.add_section(res)
