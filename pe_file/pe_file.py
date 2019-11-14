@@ -613,7 +613,7 @@ class PEFile(ServiceBase):
                 for entry in self.pe_file.DIRECTORY_ENTRY_IMPORT:
                     for imp in entry.imports:
                         if imp.name is None:
-                            sorted_import_list.append(str(imp.ordinal))
+                            sorted_import_list.append(str(imp.ordinal).encode())
                         else:
                             sorted_import_list.append(imp.name)
 
