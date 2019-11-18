@@ -154,9 +154,9 @@ class PEFile(ServiceBase):
                 pe_sec_res.add_subsection(pe_subsec)
 
                 if entropy > 7.5:
-                    he_sec = ResultSection("%s section has high entropy" % sname)
+                    he_sec = ResultSection("%s section has high entropy" % safe_str(sname))
                     he_sec.set_heuristic(4)
-                    pe_sec_res.add_subsection(he_sec)
+                    pe_subsec.add_subsection(he_sec)
 
         except AttributeError:
             pass
