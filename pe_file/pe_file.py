@@ -273,13 +273,13 @@ class PEFile(ServiceBase):
                             entry_name = "UNKNOWN"
                     else:
                         entry_name = res_entry.name
-                        pe_resource_res.add_tag('file.pe.resources.name', entry_name)
+                        pe_resource_res.add_tag('file.pe.resources.name', safe_str(entry_name, force_str=True))
 
                     for name_id in res_entry.directory.entries:
                         if name_id.name is None:
                             name_id.name = hex(name_id.id)
                         else:
-                            pe_resource_res.add_tag('file.pe.resources.name', name_id.name)
+                            pe_resource_res.add_tag('file.pe.resources.name', safe_str(name_id.name, force_str=True))
 
                         for language in name_id.directory.entries:
                             try:
