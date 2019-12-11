@@ -422,8 +422,8 @@ class PEFile(ServiceBase):
                                         # Get item type
                                         if self.pe_file.get_word_at_rva(data_rva + offset) == 0xFFFF:
                                             offset += WORD
+                                            type_id = self.pe_file.get_word_at_rva(data_rva + offset)
                                             try:
-                                                type_id = self.pe_file.get_word_at_rva(data_rva + offset)
                                                 item_type = ITEM_TYPES[type_id]
                                             except KeyError:
                                                 item_type = f"UNKNOWN_{type_id}"
