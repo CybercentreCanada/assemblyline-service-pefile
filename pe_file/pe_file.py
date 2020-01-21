@@ -809,9 +809,11 @@ class PEFile(ServiceBase):
                                             "Valid To: %s" % cert.valid_to.isoformat()])
 
                         signer_res.add_subsection(cert_res)
-        except Exception:
-            res = ResultSection("Error trying to check for PE signatures")
-            res.add_line("Traceback:")
-            res.add_lines(traceback.format_exc().splitlines())
+        except Exception as e:
+            self.log.warning("Could not parse signature properly:\n" + traceback.format_exc())
+
+            res = ResultSection("Invalid PE Signature detected", heuristic=Heuristic(1))
+            res.add_lines(["The following exception was generated while trying to validate signature:",
+                           safe_str(str(e))])
 
         self.file_res.add_section(res)
