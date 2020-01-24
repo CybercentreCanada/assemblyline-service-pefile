@@ -18,7 +18,7 @@ from assemblyline.common.str_utils import safe_str, translate_str
 from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
 from signify import signed_pe, authenticode, context
-from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, VerificationError
+from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, VerificationError, ParseError
 
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
@@ -810,10 +810,22 @@ class PEFile(ServiceBase):
 
                         signer_res.add_subsection(cert_res)
         except Exception as e:
-            self.log.warning("Could not parse signature properly:\n" + traceback.format_exc())
+            res = None
+            if isinstance(e, ParseError):
+                cve20200601 = "SignerInfo.digestEncryptionAlgorithm: [0-9.]* is not acceptable as encryption algorithm"
+                if re.match(cve20200601, str(e)):
+                    res = ResultSection("Invalid Encryption Algorithm used for signature", heuristic=Heuristic(9))
+                    res.add_lines(["The following exception was generated while trying to validate signature:",
+                                   safe_str(str(e)),
+                                   "This is usually a sign of someone tampering with "
+                                   "the signature information.(Used by: CVE_2020_0601)"])
+                    res.add_tag("attribution.exploit", "CVE_2020_0601")
 
-            res = ResultSection("Invalid PE Signature detected", heuristic=Heuristic(1))
-            res.add_lines(["The following exception was generated while trying to validate signature:",
-                           safe_str(str(e))])
+            if not res:
+                self.log.warning("Could not parse signature properly:\n" + traceback.format_exc())
+
+                res = ResultSection("Invalid PE Signature detected", heuristic=Heuristic(1))
+                res.add_lines(["The following exception was generated while trying to validate signature:",
+                               safe_str(str(e))])
 
         self.file_res.add_section(res)

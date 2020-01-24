@@ -80,6 +80,15 @@ heuristics:
     name: Less than two certificates
     score: 50
 
+  - description: >-
+       The signature has an invalid encryption algorithm set therefore cannot be decode. This is
+       usually a sign of someone tampering with the signature information.
+    filetype: "executable/windows"
+    heur_id: 9
+    name: Invalid encryption algorithm used
+    score: 1000
+
+
 docker_config:
   image: cccs/assemblyline-service-pefile:latest
   cpu_cores: 0.2
