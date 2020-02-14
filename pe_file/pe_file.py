@@ -151,12 +151,10 @@ class PEFile(ServiceBase):
                     body_format=BODY_FORMAT.GRAPH_DATA,
                     body=json.dumps(entropy_graph_data))
                 pe_subsec.add_tag('file.pe.sections.hash', sec_md5)
-                pe_sec_res.add_subsection(pe_subsec)
-
+                pe_subsec.add_tag('file.pe.sections.name', sname)
                 if entropy > 7.5:
-                    he_sec = ResultSection("%s section has high entropy" % safe_str(sname))
-                    he_sec.set_heuristic(4)
-                    pe_subsec.add_subsection(he_sec)
+                    pe_subsec.set_heuristic(4)
+                pe_sec_res.add_subsection(pe_subsec)
 
         except AttributeError:
             pass
