@@ -90,6 +90,6 @@ heuristics:
 
 
 docker_config:
-  image: cccs/assemblyline-service-pefile:latest
+  image: ${REGISTRY}cccs/assemblyline-service-pefile:latest
   cpu_cores: 1
   ram_mb: 512
