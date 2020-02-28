@@ -4,7 +4,7 @@ FROM cccs/assemblyline-v4-service-base:latest
 ENV SERVICE_PATH pe_file.pe_file.PEFile
 
 # Install apt dependancies
-RUN apt update && apt install wget && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt install -y wget && rm -rf /var/lib/apt/lists/*
 
 # Install python dependancies
 RUN pip install pefile signify pathlib2 ssdeep
