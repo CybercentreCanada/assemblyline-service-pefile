@@ -4,6 +4,9 @@ This Assemblyline service runs the PEFile application against windows executable
 
 **NOTE**: This service does not require you to buy any licence and is preinstalled and working after a default installation
 
+## Service Development
+If you are developing the service on it's own, you will need the `apiscout` [package](https://github.com/danielplohmann/apiscout), which needs to be cloned into the `pe_file` directory in the service.
+
 ## Execution
 
 This services attempts to extract PE headers and provides the following information in the result output (when available):

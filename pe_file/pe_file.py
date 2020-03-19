@@ -646,9 +646,8 @@ class PEFile(ServiceBase):
         with open(self.path, 'rb') as f:
             file_content = f.read()
 
-        self.impfuzzy = pyimpfuzzy.pefileEx(data=file_content)
-
         try:
+            self.impfuzzy = pyimpfuzzy.pefileEx(data=file_content)
             self.pe_file = pefile.PE(data=file_content)
         except pefile.PEFormatError as e:
             if e.value != "DOS Header magic not found.":
@@ -656,6 +655,8 @@ class PEFile(ServiceBase):
                                                 f"loading inside PE file. [{e.value}]")
                 res_load_failed.set_heuristic(6)
                 self.file_res.add_section(res_load_failed)
+            else:
+                self.log.debug("DOS Header magic not found. This indicates that the file submitted is not a PE File.")
             self.log.debug(e)
 
         if self.pe_file is not None:
