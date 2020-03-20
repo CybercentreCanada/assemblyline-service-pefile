@@ -177,6 +177,8 @@ class PEFile(ServiceBase):
 
         except AttributeError:
             pass
+        except StopIteration:
+            pass
 
         # imports
         try:
