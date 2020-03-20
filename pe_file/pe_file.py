@@ -145,9 +145,11 @@ class PEFile(ServiceBase):
                     body_format=BODY_FORMAT.GRAPH_DATA,
                     body=json.dumps(entropy_graph_data))
                 pe_subsec.add_tag('file.pe.sections.hash', sec_md5)
-                if isinstance(sname, bytes):
-                    sname = sname.decode(chardet.detect(sname).get('encoding', 'utf-8'))
-                pe_subsec.add_tag('file.pe.sections.name', sname)
+                if sname:
+                    if isinstance(sname, bytes):
+                        method = chardet.detect(sname).get('encoding', 'utf-8')
+                        sname = sname.decode(method)
+                    pe_subsec.add_tag('file.pe.sections.name', sname)
                 if entropy > 7.5:
                     pe_subsec.set_heuristic(4)
                 pe_sec_res.add_subsection(pe_subsec)
