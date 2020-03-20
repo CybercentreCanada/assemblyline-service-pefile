@@ -75,12 +75,6 @@ class PEFile(ServiceBase):
 
         # PE Header
         pe_header_res = ResultSection("PE: HEADER")
-        if hasattr(self.pe_file, 'OriginalFilename') and len(self.pe_file.OriginalFilename) > 0:
-            pe_header_res.add_line(f"Original Filename: {self.pe_file.OriginalFilename}")
-            pe_header_res.add_tag("file.pe.version.filename", self.pe_file.OriginalFilename)
-        if hasattr(self.pe_file, 'FileDescription') and len(self.pe_file.FileDescription) > 0:
-            pe_header_res.add_line(f"Description: {self.pe_file.FileDescription}")
-            pe_header_res.add_tag("file.pe.version.description", self.pe_file.FileDescription)
 
         # PE Header: Header Info
         pe_header_info_res = ResultSection("[HEADER INFO]", parent=pe_header_res)
@@ -151,6 +145,8 @@ class PEFile(ServiceBase):
                     body_format=BODY_FORMAT.GRAPH_DATA,
                     body=json.dumps(entropy_graph_data))
                 pe_subsec.add_tag('file.pe.sections.hash', sec_md5)
+                if isinstance(sname, bytes):
+                    sname = sname.decode(chardet.detect(sname).get('encoding', 'utf-8'))
                 pe_subsec.add_tag('file.pe.sections.name', sname)
                 if entropy > 7.5:
                     pe_subsec.set_heuristic(4)
@@ -163,13 +159,15 @@ class PEFile(ServiceBase):
 
         # debug
         try:
-            if self.pe_file.DebugTimeDateStamp:
+            dir = next(item for item in self.pe_file.DIRECTORY_ENTRY_DEBUG if item.entry is not None )
+            debug_time_date_stamp = dir.struct.TimeDateStamp
+            if debug_time_date_stamp:
                 pe_debug_res = ResultSection("PE: DEBUG")
                 self.file_res.add_section(pe_debug_res)
 
-                pe_debug_res.add_line("Time Date Stamp: %s" % time.ctime(self.pe_file.DebugTimeDateStamp))
+                pe_debug_res.add_line("Time Date Stamp: %s" % time.ctime(debug_time_date_stamp))
 
-                char_enc_guessed = translate_str(self.pe_file.pdb_filename)
+                char_enc_guessed = translate_str(dir.entry.PdbFileName)
                 pdb_filename = char_enc_guessed['converted']
                 pe_debug_res.add_line(f"PDB: {pdb_filename} - encoding:{char_enc_guessed['encoding']} "
                                       f"confidence:{char_enc_guessed['confidence']}")
@@ -313,35 +311,41 @@ class PEFile(ServiceBase):
                 pass
 
             for file_info in self.pe_file.FileInfo:
-                if file_info.name == "StringFileInfo":
-                    if len(file_info.StringTable) > 0:
-                        pe_resource_verinfo_res = ResultSection("PE: RESOURCES-VersionInfo")
-                        self.file_res.add_section(pe_resource_verinfo_res)
+                for file_info_type in file_info:
+                    if file_info_type.name == "StringFileInfo":
+                        if len(file_info_type.StringTable) > 0:
+                            pe_resource_verinfo_res = ResultSection("PE: RESOURCES-VersionInfo")
+                            self.file_res.add_section(pe_resource_verinfo_res)
 
-                        lang_id = None
-                        try:
-                            if "LangID" in file_info.StringTable[0].entries:
-                                lang_id = file_info.StringTable[0].get("LangID")
-                                if not int(lang_id, 16) >> 16 == 0:
-                                    txt = ('LangId: ' + lang_id + " (" + lcid[
-                                        int(lang_id, 16) >> 16] + ")")
-                                    pe_resource_verinfo_res.add_line(txt)
-                                else:
-                                    txt = ('LangId: ' + lang_id + " (NEUTRAL)")
-                                    pe_resource_verinfo_res.add_line(txt)
-                        except (ValueError, KeyError):
-                            if lang_id is not None:
-                                pe_resource_verinfo_res.add_line(f'LangId: {lang_id} is invalid')
+                            lang_id = None
+                            try:
+                                lang_id = file_info_type.StringTable[0].LangID.decode()
+                                if lang_id:
+                                    if not int(lang_id, 16) >> 16 == 0:
+                                        txt = ('LangId: ' + lang_id + " (" + lcid[
+                                            int(lang_id, 16) >> 16] + ")")
+                                        pe_resource_verinfo_res.add_line(txt)
+                                    else:
+                                        txt = ('LangId: ' + lang_id + " (NEUTRAL)")
+                                        pe_resource_verinfo_res.add_line(txt)
+                            except (ValueError, KeyError):
+                                if lang_id is not None:
+                                    pe_resource_verinfo_res.add_line(f'LangId: {lang_id} is invalid')
 
-                        for entry in file_info.StringTable[0].entries.items():
-                            txt = f'{entry[0]}: {entry[1]}'
+                            for entry in file_info_type.StringTable[0].entries.items():
+                                txt = f'{entry[0]}: {entry[1]}'
+                                if entry[0].decode() == 'OriginalFilename':
+                                    filename = entry[1].decode()
+                                    pe_resource_verinfo_res.add_tag('file.pe.versions.filename', entry[1])
+                                    pe_header_res.add_line(f"Original Filename: {filename}")
+                                    pe_header_res.add_tag("file.pe.versions.filename", filename)
+                                elif entry[0].decode() == 'FileDescription':
+                                    file_desc = entry[1].decode()
+                                    pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
+                                    pe_header_res.add_line(f"Description: {file_desc}")
+                                    pe_header_res.add_tag("file.pe.versions.description", file_desc)
 
-                            if entry[0] == 'OriginalFilename':
-                                pe_resource_verinfo_res.add_tag('file.pe.version.filename', entry[1])
-                            elif entry[0] == 'FileDescription':
-                                pe_resource_verinfo_res.add_tag('file.pe.version.description', entry[1])
-
-                            pe_resource_verinfo_res.add_line(txt)
+                                pe_resource_verinfo_res.add_line(txt)
 
         except AttributeError:
             pass
@@ -646,9 +650,8 @@ class PEFile(ServiceBase):
         with open(self.path, 'rb') as f:
             file_content = f.read()
 
-        self.impfuzzy = pyimpfuzzy.pefileEx(data=file_content)
-
         try:
+            self.impfuzzy = pyimpfuzzy.pefileEx(data=file_content)
             self.pe_file = pefile.PE(data=file_content)
         except pefile.PEFormatError as e:
             if e.value != "DOS Header magic not found.":
@@ -656,6 +659,8 @@ class PEFile(ServiceBase):
                                                 f"loading inside PE file. [{e.value}]")
                 res_load_failed.set_heuristic(6)
                 self.file_res.add_section(res_load_failed)
+            else:
+                self.log.debug("DOS Header magic not found. This indicates that the file submitted is not a PE File.")
             self.log.debug(e)
 
         if self.pe_file is not None:
