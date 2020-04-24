@@ -161,15 +161,15 @@ class PEFile(ServiceBase):
 
         # debug
         try:
-            dir = next(item for item in self.pe_file.DIRECTORY_ENTRY_DEBUG if item.entry is not None )
-            debug_time_date_stamp = dir.struct.TimeDateStamp
+            directory = next(item for item in self.pe_file.DIRECTORY_ENTRY_DEBUG if item.entry is not None)
+            debug_time_date_stamp = directory.struct.TimeDateStamp
             if debug_time_date_stamp:
                 pe_debug_res = ResultSection("PE: DEBUG")
                 self.file_res.add_section(pe_debug_res)
 
                 pe_debug_res.add_line("Time Date Stamp: %s" % time.ctime(debug_time_date_stamp))
 
-                char_enc_guessed = translate_str(dir.entry.PdbFileName)
+                char_enc_guessed = translate_str(directory.entry.PdbFileName)
                 pdb_filename = char_enc_guessed['converted']
                 pe_debug_res.add_line(f"PDB: {pdb_filename} - encoding:{char_enc_guessed['encoding']} "
                                       f"confidence:{char_enc_guessed['confidence']}")

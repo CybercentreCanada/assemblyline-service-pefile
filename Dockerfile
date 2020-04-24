@@ -5,9 +5,6 @@ ENV SERVICE_PATH pe_file.pe_file.PEFile
 
 USER root
 
-# Install apt dependancies
-RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
-
 # Switch to assemblyline user
 USER assemblyline
 
