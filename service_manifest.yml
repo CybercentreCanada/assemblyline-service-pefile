@@ -1,5 +1,5 @@
 name: PEFile
-version: 1
+version: $SERVICE_TAG
 description: >-
   This service extracts attributes (imports, exports, section names, ...)
   from windows PE files using the python library pefile.
@@ -90,6 +90,6 @@ heuristics:
 
 
 docker_config:
-  image: ${REGISTRY}cccs/assemblyline-service-pefile:latest
+  image: ${REGISTRY}cccs/assemblyline-service-pefile:$SERVICE_TAG
   cpu_cores: 1
   ram_mb: 512
