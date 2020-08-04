@@ -345,9 +345,10 @@ class PEFile(ServiceBase):
                                     pe_header_res.add_tag("file.pe.versions.filename", filename)
                                 elif entry[0].decode() == 'FileDescription':
                                     file_desc = entry[1].decode()
-                                    pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
+                                    if file_desc is not "":
+                                        pe_header_res.add_tag("file.pe.versions.description", file_desc)
+                                        pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
                                     pe_header_res.add_line(f"Description: {file_desc}")
-                                    pe_header_res.add_tag("file.pe.versions.description", file_desc)
 
                                 pe_resource_verinfo_res.add_line(txt)
 
@@ -472,9 +473,11 @@ class PEFile(ServiceBase):
                                         strings.append(("DIALOG_TITLE", window_title))
                                     offset += len(window_title) * 2 + WORD
 
-                                    if (style & DS_SETFONT) != 0:
-                                        offset += WORD
-                                        offset += len(self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
+                                    if style is not None:
+                                        if (style & DS_SETFONT) != 0:
+                                            offset += WORD
+                                            offset += len(
+                                                self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
 
                                     # Alignment adjustment
                                     if (offset % 4) != 0:
@@ -611,7 +614,7 @@ class PEFile(ServiceBase):
             section = self.pe_file.get_section_by_rva(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.Name)
             offset = section.get_offset_from_rva(self.pe_file.DIRECTORY_ENTRY_EXPORT.struct.Name)
             self.pe_file.ModuleName = self.pe_file.__data__[offset:offset +
-                                                            self.pe_file.__data__[offset:].find(chr(0).encode())]
+                                                                   self.pe_file.__data__[offset:].find(chr(0).encode())]
         except AttributeError:
             pass
 
@@ -727,7 +730,7 @@ class PEFile(ServiceBase):
                     res.add_subsection(ResultSection("No file signature data found"))
 
                 else:
-                    res.add_subsection("Unknown exception. Traceback: %s" % traceback.format_exc())
+                    res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
                 self.file_res.add_section(res)
                 return
             except AuthenticodeVerificationError as e:
@@ -782,7 +785,7 @@ class PEFile(ServiceBase):
                     res.add_subsection(signer_res)
 
                     signer_res.add_lines([f"Serial No: {str(s.signer_info.serial_number)}",
-                                          f"Issuer: {s.signer_info.issuer_dn}"])
+                                          f"Issuer: {s.signer_info.issuer_dn or 'Not Found'}"])
 
                     # Extract signer info. This is probably the most useful?
                     signer_res.add_tag("cert.serial_no", str(s.signer_info.serial_number))
