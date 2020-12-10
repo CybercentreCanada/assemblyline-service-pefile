@@ -509,7 +509,8 @@ class PEFile(ServiceBase):
                                             offset += len(item_text) * 2 + WORD
 
                                         extra_bytes = self.pe_file.get_word_at_rva(data_rva + offset)
-                                        offset += extra_bytes + WORD
+                                        if extra_bytes is not None:
+                                            offset += extra_bytes + WORD
 
                                         # Alignment adjustment
                                         if (offset % 4) != 0:
@@ -785,20 +786,20 @@ class PEFile(ServiceBase):
                     res.add_subsection(signer_res)
 
                     signer_res.add_lines([f"Serial No: {str(s.signer_info.serial_number)}",
-                                          f"Issuer: {s.signer_info.issuer_dn or 'Not Found'}"])
+                                          f"Issuer: {s.signer_info.issuer.dn or 'Not Found'}"])
 
                     # Extract signer info. This is probably the most useful?
                     signer_res.add_tag("cert.serial_no", str(s.signer_info.serial_number))
-                    signer_res.add_tag("cert.issuer", s.signer_info.issuer_dn)
+                    signer_res.add_tag("cert.issuer", s.signer_info.issuer.dn)
 
                     # Get cert used for signing, then add valid from/to info
                     for cert in [x for x in s.certificates if x.serial_number == s.signer_info.serial_number]:
-                        signer_res.add_lines([f"Subject: {cert.subject_dn}",
+                        signer_res.add_lines([f"Subject: {cert.subject.dn}",
                                               f"Valid From: {cert.valid_from.isoformat()}",
                                               f"Valid To: {cert.valid_to.isoformat()}",
                                               f"Thumbprint: {hashlib.sha1(cert.to_der).hexdigest()}"])
 
-                        signer_res.add_tag("cert.subject", cert.subject_dn)
+                        signer_res.add_tag("cert.subject", cert.subject.dn)
                         signer_res.add_tag("cert.valid.start", cert.valid_from.isoformat())
                         signer_res.add_tag("cert.valid.end", cert.valid_to.isoformat())
 
@@ -813,8 +814,8 @@ class PEFile(ServiceBase):
                         cert_res.add_lines(["Version: %d" % cert.version,
                                             "Serial No: %d" % cert.serial_number,
                                             "Thumbprint: %s" % hashlib.sha1(cert.to_der).hexdigest(),
-                                            "Issuer: %s" % cert.issuer_dn,
-                                            "Subject: %s" % cert.subject_dn,
+                                            "Issuer: %s" % cert.issuer.dn,
+                                            "Subject: %s" % cert.subject.dn,
                                             "Valid From: %s" % cert.valid_from.isoformat(),
                                             "Valid To: %s" % cert.valid_to.isoformat()])
 
