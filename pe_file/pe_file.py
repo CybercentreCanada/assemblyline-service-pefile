@@ -148,7 +148,7 @@ class PEFile(ServiceBase):
                 if sname:
                     if isinstance(sname, bytes):
                         method = chardet.detect(sname).get('encoding', 'utf-8')
-                        sname = sname.decode(method) if method else str_safe(sname.decode('utf-8'))
+                        sname = sname.decode(method) if method else safe_str(sname)
                     pe_subsec.add_tag('file.pe.sections.name', sname)
                 if entropy > 7.5:
                     pe_subsec.set_heuristic(4)
