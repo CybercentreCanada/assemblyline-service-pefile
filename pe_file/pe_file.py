@@ -669,7 +669,7 @@ class PEFile(ServiceBase):
             if e.value != "DOS Header magic not found.":
                 res_load_failed = ResultSection(f"WARNING: this file looks like a PE but failed "
                                                 f"loading inside PE file. [{e.value}]")
-                res_load_failed.set_heuristic(6)
+                res_load_failed.set_heuristic(7)
                 self.file_res.add_section(res_load_failed)
             else:
                 self.log.debug("DOS Header magic not found. This indicates that the file submitted is not a PE File.")
