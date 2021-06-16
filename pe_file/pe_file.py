@@ -22,6 +22,8 @@ from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError
 
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
+import pe_file.icon_extractor as icon_extractor
+import random
 
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
@@ -259,6 +261,8 @@ class PEFile(ServiceBase):
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
                 pe_resource_res = ResultSection("PE: RESOURCES")
                 self.file_res.add_section(pe_resource_res)
+                icon_groups = list()
+                icon_rsrcs = None
 
                 for res_entry in self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries:
                     if res_entry.name is None:
@@ -275,17 +279,39 @@ class PEFile(ServiceBase):
                         entry_name = res_entry.name
                         pe_resource_res.add_tag('file.pe.resources.name', safe_str(entry_name, force_str=True))
 
+                    if entry_name == 'RT_ICON':
+                        icon_rsrcs = res_entry
+
                     for name_id in res_entry.directory.entries:
                         if name_id.name is None:
                             name_id.name = hex(name_id.id)
                         else:
                             pe_resource_res.add_tag('file.pe.resources.name', safe_str(name_id.name, force_str=True))
-
                         for language in name_id.directory.entries:
                             try:
                                 language_desc = lcid[language.id]
                             except KeyError:
                                 language_desc = 'Unknown language'
+
+                            if entry_name == 'RT_GROUP_ICON':
+                                data_rva = language.data.struct.OffsetToData
+                                size = language.data.struct.Size
+                                data = self.pe_file.get_memory_mapped_image()[data_rva:data_rva+size]
+                                file_offset = self.pe_file.get_offset_from_rva(data_rva)
+
+                                grp_icon_dir = pefile.Structure(icon_extractor.GRPICONDIR_format, file_offset=file_offset)
+                                grp_icon_dir.__unpack__(data)
+
+                                if grp_icon_dir.Reserved == 0 or grp_icon_dir.Type == 1:
+                                    offset = grp_icon_dir.sizeof()
+                                    entries = list()
+                                    for idx in range(0, grp_icon_dir.Count):
+                                        grp_icon = pefile.Structure(icon_extractor.GRPICONDIRENTRY_format, file_offset=file_offset+offset)
+                                        grp_icon.__unpack__(data[offset:])
+                                        offset += grp_icon.sizeof()
+                                        entries.append(grp_icon)
+
+                                    icon_groups.append(entries)
 
                             line = []
                             if res_entry.name is None:
@@ -305,6 +331,13 @@ class PEFile(ServiceBase):
                             line.append(" Size: 0x%x" % res_size)
 
                             pe_resource_res.add_line(line)
+
+                # export icons
+                for j in range(len(icon_groups)):
+                    for i in range(len(icon_groups[j])):
+                        icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
+                        name = str(random.randint(1000000, 1999999)) + ".ico"
+                        icon_export.save('/home/walle/Documents/' + name)
 
         except AttributeError:
             pass
