@@ -32,7 +32,7 @@ def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> list:
 
     return None
 
-def get_icon(pe_file, icon_rsrcs, idx):
+def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: int) -> bytearray:
     icon_id = icon_rsrcs.directory.entries[idx-1]
     icon_entry = icon_id.directory.entries[0]
 
@@ -42,9 +42,9 @@ def get_icon(pe_file, icon_rsrcs, idx):
     return data
 
 
-def icon_export_raw(pe_file, icon_rsrcs, entries, index = None):
-    if index is not None:
-        entries = entries[index:index+1]
+def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> bytes:
+    if idx is not None:
+        entries = entries[idx:idx+1]
 
     ico = struct.pack('<HHH', 0, 1, len(entries))
     data_offset = None
@@ -66,11 +66,11 @@ def icon_export_raw(pe_file, icon_rsrcs, entries, index = None):
     raw = ico + b''.join(info) + b''.join(data)
     return raw
 
-def icon_export(pe_file, icon_rsrcs, entries, index = None):
+def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> Image.Image:
     if icon_rsrcs is None:
         return None
 
-    raw = icon_export_raw(pe_file, icon_rsrcs, entries, index)
+    raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
     return Image.open(BytesIO(raw))
 
 
