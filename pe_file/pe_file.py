@@ -294,23 +294,8 @@ class PEFile(ServiceBase):
                                 language_desc = 'Unknown language'
 
                             if entry_name == 'RT_GROUP_ICON':
-                                data_rva = language.data.struct.OffsetToData
-                                size = language.data.struct.Size
-                                data = self.pe_file.get_memory_mapped_image()[data_rva:data_rva+size]
-                                file_offset = self.pe_file.get_offset_from_rva(data_rva)
-
-                                grp_icon_dir = pefile.Structure(icon_extractor.GRPICONDIR_format, file_offset=file_offset)
-                                grp_icon_dir.__unpack__(data)
-
-                                if grp_icon_dir.Reserved == 0 or grp_icon_dir.Type == 1:
-                                    offset = grp_icon_dir.sizeof()
-                                    entries = list()
-                                    for idx in range(0, grp_icon_dir.Count):
-                                        grp_icon = pefile.Structure(icon_extractor.GRPICONDIRENTRY_format, file_offset=file_offset+offset)
-                                        grp_icon.__unpack__(data[offset:])
-                                        offset += grp_icon.sizeof()
-                                        entries.append(grp_icon)
-
+                                entries = icon_extractor.get_icon_group(self.pe_file, language.data.struct)
+                                if entries is not None:
                                     icon_groups.append(entries)
 
                             line = []
