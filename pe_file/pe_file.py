@@ -23,7 +23,6 @@ from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
 import pe_file.icon_extractor as icon_extractor
-import random
 
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
@@ -72,7 +71,7 @@ class PEFile(ServiceBase):
         return self.pe_file.get_imphash()
 
     # noinspection PyPep8Naming
-    def get_pe_info(self, lcid):
+    def get_pe_info(self, lcid, supplementary_files):
         """Dumps the PE header as Results in the FileResult."""
 
         # PE Header
@@ -321,8 +320,10 @@ class PEFile(ServiceBase):
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
-                        name = str(random.randint(1000000, 1999999)) + ".ico"
-                        icon_export.save('/home/walle/Documents/' + name)
+                        name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
+                        path = os.path.join(self.working_directory, name)
+                        icon_export.save(path)
+                        supplementary_files.append( (path, name, 'Extracted RT_ICON') )
 
         except AttributeError:
             pass
@@ -676,7 +677,7 @@ class PEFile(ServiceBase):
         self.print_slack = True
         self.patch_section = None
         self.filesize_from_peheader = -1
-
+        
         with open(self.path, 'rb') as f:
             file_content = f.read()
 
@@ -694,10 +695,14 @@ class PEFile(ServiceBase):
             self.log.debug(e)
 
         if self.pe_file is not None:
+            supplementary_files = []
             self.get_export_module_name()
-            self.get_pe_info(G_LCID)
+            self.get_pe_info(G_LCID, supplementary_files)
             self.get_signature_information(BytesIO(file_content))
             self.get_api_vector()
+
+            for path, name, desc in supplementary_files:
+                request.add_supplementary(path, name, desc)
 
     def get_api_vector(self):
         # We need to do a bit of manipulation on the list of API calls to normalize to
