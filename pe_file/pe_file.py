@@ -320,6 +320,9 @@ class PEFile(ServiceBase):
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
+
+                        if icon_export is None: continue
+                        
                         name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
                         path = os.path.join(self.working_directory, name)
                         icon_export.save(path)

@@ -33,8 +33,22 @@ def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> list:
     return None
 
 def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: int) -> bytearray:
-    icon_id = icon_rsrcs.directory.entries[idx-1]
+
+    if idx < 0:
+        try:
+            idx = [entry.id for entry in icon_rsrcs.directory.entries].index(-idx)
+        except:
+            return None
+    else:
+        idx = idx if idx < len(icon_rsrcs.directory.entries) else None
+
+    if idx is None: return None
+
+    icon_id = icon_rsrcs.directory.entries[idx]
     icon_entry = icon_id.directory.entries[0]
+
+    if icon_entry.struct.DataIsDirectory:
+        return None
 
     data_rva = icon_entry.data.struct.OffsetToData
     size = icon_entry.data.struct.Size
@@ -57,7 +71,7 @@ def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData,
         nfo = grp_icon.__pack__()[:-2] + struct.pack('<L', data_offset)			
         info.append( nfo )
 
-        raw_data = get_icon(pe_file, icon_rsrcs, grp_icon.ID)
+        raw_data = get_icon(pe_file, icon_rsrcs, -grp_icon.ID)
         if not raw_data: continue
 
         data.append( raw_data )
@@ -71,7 +85,11 @@ def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, ent
         return None
 
     raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
-    return Image.open(BytesIO(raw))
+
+    try:
+        return Image.open(BytesIO(raw))
+    except:
+        return None
 
 
 
