@@ -2,6 +2,7 @@ import struct
 from io import BytesIO
 from PIL import Image
 import pefile
+from typing import Optional
 
 
 GRPICONDIRENTRY_format = ('GRPICONDIRENTRY',
@@ -10,7 +11,7 @@ GRPICONDIRENTRY_format = ('GRPICONDIRENTRY',
 GRPICONDIR_format = ('GRPICONDIR',
     ('H,Reserved', 'H,Type','H,Count'))
 
-def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> list:
+def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> Optional[list]:
     data_rva = data_entry.OffsetToData
     size = data_entry.Size
     data = pe_file.get_memory_mapped_image()[data_rva:data_rva+size]
@@ -32,8 +33,7 @@ def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> list:
 
     return None
 
-def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: int) -> bytearray:
-
+def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: int) -> Optional[bytearray]:
     if idx < 0:
         try:
             idx = [entry.id for entry in icon_rsrcs.directory.entries].index(-idx)
@@ -67,28 +67,24 @@ def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData,
     for grp_icon in entries:
         if data_offset is None:
             data_offset = len(ico) + ((grp_icon.sizeof()+2) * len(entries))
-
         nfo = grp_icon.__pack__()[:-2] + struct.pack('<L', data_offset)			
         info.append( nfo )
 
         raw_data = get_icon(pe_file, icon_rsrcs, -grp_icon.ID)
         if not raw_data: continue
-
         data.append( raw_data )
         data_offset += len(raw_data)
 
     raw = ico + b''.join(info) + b''.join(data)
     return raw
 
-def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> Image.Image:
+def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> Optional[Image.Image]:
     if icon_rsrcs is None:
         return None
-
     raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
-
     try:
         return Image.open(BytesIO(raw))
-    except:
+    except ValueError:
         return None
 
 
