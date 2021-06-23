@@ -22,6 +22,7 @@ from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError
 
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
+import pe_file.icon_extractor as icon_extractor
 
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
@@ -70,7 +71,7 @@ class PEFile(ServiceBase):
         return self.pe_file.get_imphash()
 
     # noinspection PyPep8Naming
-    def get_pe_info(self, lcid):
+    def get_pe_info(self, lcid, supplementary_files):
         """Dumps the PE header as Results in the FileResult."""
 
         # PE Header
@@ -259,6 +260,8 @@ class PEFile(ServiceBase):
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
                 pe_resource_res = ResultSection("PE: RESOURCES")
                 self.file_res.add_section(pe_resource_res)
+                icon_groups = list()
+                icon_rsrcs = None
 
                 for res_entry in self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries:
                     if res_entry.name is None:
@@ -275,17 +278,24 @@ class PEFile(ServiceBase):
                         entry_name = res_entry.name
                         pe_resource_res.add_tag('file.pe.resources.name', safe_str(entry_name, force_str=True))
 
+                    if entry_name == 'RT_ICON':
+                        icon_rsrcs = res_entry
+
                     for name_id in res_entry.directory.entries:
                         if name_id.name is None:
                             name_id.name = hex(name_id.id)
                         else:
                             pe_resource_res.add_tag('file.pe.resources.name', safe_str(name_id.name, force_str=True))
-
                         for language in name_id.directory.entries:
                             try:
                                 language_desc = lcid[language.id]
                             except KeyError:
                                 language_desc = 'Unknown language'
+
+                            if entry_name == 'RT_GROUP_ICON':
+                                entries = icon_extractor.get_icon_group(self.pe_file, language.data.struct)
+                                if entries is not None:
+                                    icon_groups.append(entries)
 
                             line = []
                             if res_entry.name is None:
@@ -305,6 +315,18 @@ class PEFile(ServiceBase):
                             line.append(" Size: 0x%x" % res_size)
 
                             pe_resource_res.add_line(line)
+
+                # export icons
+                for j in range(len(icon_groups)):
+                    for i in range(len(icon_groups[j])):
+                        icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
+
+                        if icon_export is None: continue
+                        
+                        name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
+                        path = os.path.join(self.working_directory, name)
+                        icon_export.save(path)
+                        supplementary_files.append( (path, name, 'Extracted RT_ICON') )
 
         except AttributeError:
             pass
@@ -658,7 +680,7 @@ class PEFile(ServiceBase):
         self.print_slack = True
         self.patch_section = None
         self.filesize_from_peheader = -1
-
+        
         with open(self.path, 'rb') as f:
             file_content = f.read()
 
@@ -676,10 +698,14 @@ class PEFile(ServiceBase):
             self.log.debug(e)
 
         if self.pe_file is not None:
+            supplementary_files = []
             self.get_export_module_name()
-            self.get_pe_info(G_LCID)
+            self.get_pe_info(G_LCID, supplementary_files)
             self.get_signature_information(BytesIO(file_content))
             self.get_api_vector()
+
+            for path, name, desc in supplementary_files:
+                request.add_supplementary(path, name, desc)
 
     def get_api_vector(self):
         # We need to do a bit of manipulation on the list of API calls to normalize to
