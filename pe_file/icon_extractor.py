@@ -37,7 +37,7 @@ def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: i
     if idx < 0:
         try:
             idx = [entry.id for entry in icon_rsrcs.directory.entries].index(-idx)
-        except:
+        except ValueError:
             return None
     else:
         idx = idx if idx < len(icon_rsrcs.directory.entries) else None
