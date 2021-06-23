@@ -9,7 +9,7 @@ USER root
 USER assemblyline
 
 # Install python dependancies
-RUN pip install --no-cache-dir --user pefile signify pathlib2 ssdeep && rm -rf ~/.cache/pip
+RUN pip install --no-cache-dir --user pefile pillow signify pathlib2 ssdeep && rm -rf ~/.cache/pip
 
 # Install APIScout dependancy from source
 RUN pip install --no-cache-dir --user https://codeload.github.com/danielplohmann/apiscout/zip/master && rm -rf ~/.cache/pip
