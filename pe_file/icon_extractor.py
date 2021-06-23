@@ -6,10 +6,11 @@ from typing import Optional
 
 
 GRPICONDIRENTRY_format = ('GRPICONDIRENTRY',
-        ('B,Width', 'B,Height','B,ColorCount','B,Reserved',
-        'H,Planes','H,BitCount','I,BytesInRes','H,ID'))
+        ('B,Width', 'B,Height', 'B,ColorCount', 'B,Reserved',
+        'H,Planes', 'H,BitCount', 'I,BytesInRes', 'H,ID'))
 GRPICONDIR_format = ('GRPICONDIR',
-    ('H,Reserved', 'H,Type','H,Count'))
+    ('H,Reserved', 'H,Type', 'H,Count'))
+
 
 def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> Optional[list]:
     data_rva = data_entry.OffsetToData
@@ -28,16 +29,15 @@ def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> Optiona
             grp_icon.__unpack__(data[offset:])
             offset += grp_icon.sizeof()
             entries.append(grp_icon)
-
         return entries
-
     return None
+
 
 def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: int) -> Optional[bytearray]:
     if idx < 0:
         try:
             idx = [entry.id for entry in icon_rsrcs.directory.entries].index(-idx)
-        except:
+        except ValueError:
             return None
     else:
         idx = idx if idx < len(icon_rsrcs.directory.entries) else None
@@ -56,7 +56,7 @@ def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: i
     return data
 
 
-def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> bytes:
+def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int = None) -> bytes:
     if idx is not None:
         entries = entries[idx:idx+1]
 
@@ -68,17 +68,17 @@ def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData,
         if data_offset is None:
             data_offset = len(ico) + ((grp_icon.sizeof()+2) * len(entries))
         nfo = grp_icon.__pack__()[:-2] + struct.pack('<L', data_offset)			
-        info.append( nfo )
-
+        info.append(nfo)
         raw_data = get_icon(pe_file, icon_rsrcs, -grp_icon.ID)
         if not raw_data: continue
-        data.append( raw_data )
+        data.append(raw_data)
         data_offset += len(raw_data)
 
     raw = ico + b''.join(info) + b''.join(data)
     return raw
 
-def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int=None) -> Optional[Image.Image]:
+
+def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int = None) -> Optional[Image.Image]:
     if icon_rsrcs is None:
         return None
     raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
