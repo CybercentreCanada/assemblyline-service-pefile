@@ -767,7 +767,7 @@ class PEFile(ServiceBase):
                 return
             except SignerInfoParseError as e :
                 if str(e).startswith("SignerInfo.version must be 1"):
-                    res.add_subsection(ResultSection("Invalid SignerInfo Version"))
+                    res.add_subsection(ResultSection("Invalid SignerInfo Version", heuristic=Heuristic(10)))
                 else:
                     res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
                 return

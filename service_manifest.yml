@@ -88,6 +88,14 @@ heuristics:
     name: Invalid encryption algorithm used
     score: 1000
 
+  - description: >-
+       The signature has an invalid signature due to incorrect version number in SignerInfo object.
+       This typically indicates maliciousness.
+    filetype: "executable/windows"
+    heur_id: 10
+    name: Invalid Signature due to invalid Authenticode Signature version
+    score: 500
+
 
 docker_config:
   image: ${REGISTRY}cccs/assemblyline-service-pefile:$SERVICE_TAG
