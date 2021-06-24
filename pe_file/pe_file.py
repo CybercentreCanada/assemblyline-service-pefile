@@ -18,7 +18,8 @@ from assemblyline.common.str_utils import safe_str, translate_str
 from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
 from signify import signed_pe, authenticode, context
-from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, VerificationError, ParseError
+from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, \
+    VerificationError, ParseError, SignerInfoParseError
 
 from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
@@ -763,6 +764,12 @@ class PEFile(ServiceBase):
                 else:
                     res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
                 self.file_res.add_section(res)
+                return
+            except SignerInfoParseError as e :
+                if str(e).startswith("SignerInfo.version must be 1"):
+                    res.add_subsection(ResultSection("Invalid SignerInfo Version", heuristic=Heuristic(10)))
+                else:
+                    res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
                 return
             except AuthenticodeVerificationError as e:
                 if str(e) == "The expected hash does not match the digest in SpcInfo":
