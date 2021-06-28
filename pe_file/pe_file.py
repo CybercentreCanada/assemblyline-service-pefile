@@ -770,6 +770,7 @@ class PEFile(ServiceBase):
                     res.add_subsection(ResultSection("Invalid SignerInfo Version", heuristic=Heuristic(10)))
                 else:
                     res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
+                self.file_res.add_section(res)
                 return
             except AuthenticodeVerificationError as e:
                 if str(e) == "The expected hash does not match the digest in SpcInfo":
