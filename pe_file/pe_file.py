@@ -124,7 +124,7 @@ class PEFile(ServiceBase):
         self._init_section_list()
 
         try:
-            for (sname, section, sec_md5, sec_entropy) in self._sect_list:
+            for (sname, section, sec_md5) in self._sect_list:
 
                 # Create a new subsection
                 section_io = BytesIO(section.get_data())
@@ -631,8 +631,7 @@ class PEFile(ServiceBase):
                         sname = section.Name[:zero_idx]
                     else:
                         sname = safe_str(section.Name)
-                    entropy = section.get_entropy()
-                    self._sect_list.append((sname, section, section.get_hash_md5(), entropy))
+                    self._sect_list.append((sname, section, section.get_hash_md5()))
             except AttributeError:
                 pass
 
