@@ -128,13 +128,14 @@ class PEFile(ServiceBase):
 
                 # Create a new subsection
                 section_io = BytesIO(section.get_data())
-                (entropy, part_entropies) = calculate_partition_entropy(section_io)
+                ( (entropy, histogram), part_entropies) = calculate_partition_entropy(section_io)
 
+                p_entropies = (x[0] for x in part_entropies)
                 entropy_graph_data = {
                     'type': 'colormap',
                     'data': {
                         'domain': [0, 8],
-                        'values': part_entropies
+                        'values': p_entropies
                     }
                 }
 
