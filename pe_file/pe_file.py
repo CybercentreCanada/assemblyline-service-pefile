@@ -130,14 +130,19 @@ class PEFile(ServiceBase):
                 section_io = BytesIO(section.get_data())
                 ( (entropy, histogram), part_entropies) = calculate_partition_entropy(section_io)
 
-                p_entropies = (x[0] for x in part_entropies)
+                get_entropy_histogram = self.config.get("get_entropy_histogram", False)
+                #part_entropies will be a list of tuples, the first element is the entropy, the second is the histogram
+                p_entropies = [part_entropy[0] for part_entropy in part_entropies] 
+
                 entropy_graph_data = {
-                    'type': 'colormap',
-                    'data': {
-                        'domain': [0, 8],
-                        'values': p_entropies
+                        'type': 'colormap',
+                        'data': {
+                            'domain': [0, 8],
+                            'values': p_entropies
+                        }
                     }
-                }
+                if get_entropy_histogram:
+                    entropy_graph_data['entropy_byte_histogram'] = histogram.tolist()
 
                 pe_subsec = ResultSection(
                     "%s - Virtual: 0x%08X (0x%08X bytes)"
