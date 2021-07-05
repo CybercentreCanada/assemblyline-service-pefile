@@ -130,7 +130,6 @@ class PEFile(ServiceBase):
                 section_io = BytesIO(section.get_data())
                 ( (entropy, histogram), part_entropies) = calculate_partition_entropy(section_io)
 
-                get_entropy_histogram = self.config.get("get_entropy_histogram", False)
                 #part_entropies will be a list of tuples, the first element is the entropy, the second is the histogram
                 p_entropies = [part_entropy[0] for part_entropy in part_entropies] 
 
@@ -141,8 +140,6 @@ class PEFile(ServiceBase):
                             'values': p_entropies
                         }
                     }
-                if get_entropy_histogram:
-                    entropy_graph_data['entropy_byte_histogram'] = histogram.tolist()
 
                 pe_subsec = ResultSection(
                     "%s - Virtual: 0x%08X (0x%08X bytes)"
@@ -160,6 +157,17 @@ class PEFile(ServiceBase):
                     pe_subsec.add_tag('file.pe.sections.name', sname)
                 if entropy > 7.5:
                     pe_subsec.set_heuristic(4)
+
+                get_entropy_histogram = self.config.get("get_entropy_histogram", False)
+                if get_entropy_histogram:
+                    entropy_graph_data = { 'entropy_byte_histogram' : histogram.tolist() }
+                    pe_histo_subsec = ResultSection(
+                        'Section Byte Histogram',
+                        body_format=BODY_FORMAT.KEY_VALUE,
+                        body=entropy_graph_data,
+                        parent=pe_subsec
+                    )
+
                 pe_sec_res.add_subsection(pe_subsec)
 
         except AttributeError:
