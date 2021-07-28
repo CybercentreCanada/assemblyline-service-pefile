@@ -172,7 +172,7 @@ class PEFile(ServiceBase):
                 pe_debug_res.add_line("Time Date Stamp: %s" % time.ctime(debug_time_date_stamp))
 
                 char_enc_guessed = translate_str(directory.entry.PdbFileName)
-                pdb_filename = char_enc_guessed['converted']
+                pdb_filename = char_enc_guessed['converted'].split('\x00')[0]
                 pe_debug_res.add_line(f"PDB: {pdb_filename} - encoding:{char_enc_guessed['encoding']} "
                                       f"confidence:{char_enc_guessed['confidence']}")
                 pe_debug_res.add_tag('file.pe.pdb_filename', pdb_filename)
