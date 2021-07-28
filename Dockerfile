@@ -5,6 +5,7 @@ FROM cccs/assemblyline-v4-service-base:$branch
 ENV SERVICE_PATH pe_file.pe_file.PEFile
 
 USER root
+RUN apt-get update && apt-get install -y git
 
 # Switch to assemblyline user
 USER assemblyline
@@ -13,7 +14,8 @@ USER assemblyline
 RUN pip install --no-cache-dir --user pefile pillow signify pathlib2 ssdeep && rm -rf ~/.cache/pip
 
 # Install APIScout dependancy from source
-RUN pip install --no-cache-dir --user https://codeload.github.com/danielplohmann/apiscout/zip/master && rm -rf ~/.cache/pip
+# Temporary until PR is merged: https://github.com/danielplohmann/apiscout/pull/33
+RUN pip install --no-cache-dir --user git+https://github.com/cccs-rs/apiscout.git && rm -rf ~/.cache/pip
 
 # Copy PEFile service code
 WORKDIR /opt/al_service
