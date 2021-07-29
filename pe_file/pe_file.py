@@ -323,7 +323,7 @@ class PEFile(ServiceBase):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
 
                         if icon_export is None: continue
-                        
+
                         name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
                         path = os.path.join(self.working_directory, name)
                         icon_export.save(path)
@@ -368,7 +368,7 @@ class PEFile(ServiceBase):
                                     pe_header_res.add_tag("file.pe.versions.filename", filename)
                                 elif entry[0].decode() == 'FileDescription':
                                     file_desc = entry[1].decode()
-                                    if file_desc is not "":
+                                    if file_desc:
                                         pe_header_res.add_tag("file.pe.versions.description", file_desc)
                                         pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
                                     pe_header_res.add_line(f"Description: {file_desc}")
@@ -681,7 +681,7 @@ class PEFile(ServiceBase):
         self.print_slack = True
         self.patch_section = None
         self.filesize_from_peheader = -1
-        
+
         with open(self.path, 'rb') as f:
             file_content = f.read()
 
