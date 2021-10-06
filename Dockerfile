@@ -11,11 +11,10 @@ RUN apt-get update && apt-get install -y git
 USER assemblyline
 
 # Install python dependancies
-RUN pip install --no-cache-dir --user pefile pillow signify pathlib2 ssdeep && rm -rf ~/.cache/pip
+RUN pip install --no-cache-dir --user pefile pillow signify==0.3.0 pathlib2 ssdeep && rm -rf ~/.cache/pip
 
 # Install APIScout dependancy from source
-# Temporary until PR is merged: https://github.com/danielplohmann/apiscout/pull/33
-RUN pip install --no-cache-dir --user git+https://github.com/cccs-rs/apiscout.git && rm -rf ~/.cache/pip
+RUN pip install --no-cache-dir --user git+https://github.com/danielplohmann/apiscout.git && rm -rf ~/.cache/pip
 
 # Copy PEFile service code
 WORKDIR /opt/al_service
