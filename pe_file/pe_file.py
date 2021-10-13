@@ -322,12 +322,13 @@ class PEFile(ServiceBase):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
 
-                        if icon_export is None: continue
+                        if icon_export is None:
+                            continue
 
                         name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
                         path = os.path.join(self.working_directory, name)
                         icon_export.save(path)
-                        supplementary_files.append( (path, name, 'Extracted RT_ICON') )
+                        supplementary_files.append((path, name, 'Extracted RT_ICON'))
 
         except AttributeError:
             pass
@@ -765,7 +766,7 @@ class PEFile(ServiceBase):
                     res.add_subsection(ResultSection("Unknown exception. Traceback: %s" % traceback.format_exc()))
                 self.file_res.add_section(res)
                 return
-            except SignerInfoParseError as e :
+            except SignerInfoParseError as e:
                 if str(e).startswith("SignerInfo.version must be 1"):
                     res.add_subsection(ResultSection("Invalid SignerInfo Version", heuristic=Heuristic(10)))
                 else:
@@ -786,7 +787,7 @@ class PEFile(ServiceBase):
                 ex = str(e)
                 if ex.startswith("Chain verification from"):
                     # probably self signed, but maybe we just don't have the root CA
-                    flatten = lambda l: [item for sublist in l for item in sublist]
+                    def flatten(l): return [item for sublist in l for item in sublist]
                     cert_list = flatten([x.certificates for x in s_data.signed_datas])
 
                     # Check to see if all of the issuers are the same. If they are, then this is likely self signed
