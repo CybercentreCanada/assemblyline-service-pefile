@@ -12,12 +12,15 @@ import chardet
 import pathlib2 as pathlib
 import pefile
 from apiscout import ApiVector
+from assemblyline.common.identify import fileinfo
 from assemblyline.common.entropy import calculate_partition_entropy
 from assemblyline.common.hexdump import hexdump
 from assemblyline.common.str_utils import safe_str, translate_str
 from assemblyline_v4_service.common.base import ServiceBase
-from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
-from signify import signed_pe, authenticode, context
+from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic, ResultImageSection
+from signify.authenticode import TRUSTED_CERTIFICATE_STORE
+from signify.authenticode.signed_pe import SignedPEFile
+from signify.x509 import FileSystemCertificateStore
 from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, \
     VerificationError, ParseError, SignerInfoParseError
 
@@ -52,8 +55,7 @@ class PEFile(ServiceBase):
         for cert_path in more_trusted_certs:
             p = pathlib.Path(cert_path)
             if p.exists():
-                authenticode.TRUSTED_CERTIFICATE_STORE.extend(
-                    context.FileSystemCertificateStore(location=p, trusted=True))
+                TRUSTED_CERTIFICATE_STORE.extend(FileSystemCertificateStore(location=p, trusted=True))
             else:
                 self.log.error(
                     "%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
@@ -455,10 +457,7 @@ class PEFile(ServiceBase):
                                             if self.pe_file.get_word_at_rva(data_rva + offset) == 0xFFFF:
                                                 offset += WORD
                                                 type_id = self.pe_file.get_word_at_rva(data_rva + offset)
-                                                try:
-                                                    item_type = ITEM_TYPES[type_id]
-                                                except KeyError:
-                                                    item_type = f"UNKNOWN_{type_id}"
+                                                item_type = ITEM_TYPES.get(type_id, f"UNKNOWN_{type_id}")
                                                 offset += WORD
                                             else:
                                                 item_type = self.pe_file.get_string_u_at_rva(data_rva + offset)
@@ -518,7 +517,8 @@ class PEFile(ServiceBase):
                                             # Get item type
                                             if self.pe_file.get_word_at_rva(data_rva + offset) == 0xFFFF:
                                                 offset += WORD
-                                                item_type = ITEM_TYPES[self.pe_file.get_word_at_rva(data_rva + offset)]
+                                                type_id = self.pe_file.get_word_at_rva(data_rva + offset)
+                                                item_type = ITEM_TYPES.get(type_id, f"UNKNOWN_{type_id}")
                                                 offset += WORD
                                             else:
                                                 item_type = self.pe_file.get_string_u_at_rva(data_rva + offset)
@@ -706,8 +706,11 @@ class PEFile(ServiceBase):
             self.get_signature_information(BytesIO(file_content))
             self.get_api_vector()
 
-            for path, name, desc in supplementary_files:
-                request.add_supplementary(path, name, desc)
+            image_section = ResultImageSection(self.request, 'Image/Icon(s) Extracted from Sample')
+            [image_section.add_image(path, name, desc) for path, name, desc in supplementary_files]
+
+            if len(image_section.body) > 0:
+                self.file_res.add_section(image_section)
 
     def get_api_vector(self):
         # We need to do a bit of manipulation on the list of API calls to normalize to
@@ -747,7 +750,7 @@ class PEFile(ServiceBase):
             # first, let's try parsing the file
             # noinspection PyBroadException
             try:
-                s_data = signed_pe.SignedPEFile(file_handle)
+                s_data = SignedPEFile(file_handle)
             except Exception:
                 self.log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
                 return

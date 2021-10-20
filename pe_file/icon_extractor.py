@@ -6,30 +6,33 @@ from typing import Optional
 
 
 GRPICONDIRENTRY_format = ('GRPICONDIRENTRY',
-        ('B,Width', 'B,Height', 'B,ColorCount', 'B,Reserved',
-        'H,Planes', 'H,BitCount', 'I,BytesInRes', 'H,ID'))
+                          ('B,Width', 'B,Height', 'B,ColorCount', 'B,Reserved',
+                           'H,Planes', 'H,BitCount', 'I,BytesInRes', 'H,ID'))
 GRPICONDIR_format = ('GRPICONDIR',
-    ('H,Reserved', 'H,Type', 'H,Count'))
+                     ('H,Reserved', 'H,Type', 'H,Count'))
 
 
-def get_icon_group(pe_file: pefile.PE, data_entry : pefile.Structure) -> Optional[list]:
-    data_rva = data_entry.OffsetToData
-    size = data_entry.Size
-    data = pe_file.get_memory_mapped_image()[data_rva:data_rva+size]
-    file_offset = pe_file.get_offset_from_rva(data_rva)
+def get_icon_group(pe_file: pefile.PE, data_entry: pefile.Structure) -> Optional[list]:
+    try:
+        data_rva = data_entry.OffsetToData
+        size = data_entry.Size
+        data = pe_file.get_memory_mapped_image()[data_rva:data_rva+size]
+        file_offset = pe_file.get_offset_from_rva(data_rva)
 
-    grp_icon_dir = pefile.Structure(GRPICONDIR_format, file_offset=file_offset)
-    grp_icon_dir.__unpack__(data)
+        grp_icon_dir = pefile.Structure(GRPICONDIR_format, file_offset=file_offset)
+        grp_icon_dir.__unpack__(data)
 
-    if grp_icon_dir.Reserved == 0 or grp_icon_dir.Type == 1:
-        offset = grp_icon_dir.sizeof()
-        entries = list()
-        for idx in range(0, grp_icon_dir.Count):
-            grp_icon = pefile.Structure(GRPICONDIRENTRY_format, file_offset=file_offset+offset)
-            grp_icon.__unpack__(data[offset:])
-            offset += grp_icon.sizeof()
-            entries.append(grp_icon)
-        return entries
+        if grp_icon_dir.Reserved == 0 or grp_icon_dir.Type == 1:
+            offset = grp_icon_dir.sizeof()
+            entries = list()
+            for idx in range(0, grp_icon_dir.Count):
+                grp_icon = pefile.Structure(GRPICONDIRENTRY_format, file_offset=file_offset+offset)
+                grp_icon.__unpack__(data[offset:])
+                offset += grp_icon.sizeof()
+                entries.append(grp_icon)
+            return entries
+    except pefile.PEFormatError:
+        pass
     return None
 
 
@@ -42,7 +45,8 @@ def get_icon(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, idx: i
     else:
         idx = idx if idx < len(icon_rsrcs.directory.entries) else None
 
-    if idx is None: return None
+    if idx is None:
+        return None
 
     icon_id = icon_rsrcs.directory.entries[idx]
     icon_entry = icon_id.directory.entries[0]
@@ -67,10 +71,11 @@ def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData,
     for grp_icon in entries:
         if data_offset is None:
             data_offset = len(ico) + ((grp_icon.sizeof()+2) * len(entries))
-        nfo = grp_icon.__pack__()[:-2] + struct.pack('<L', data_offset)			
+        nfo = grp_icon.__pack__()[:-2] + struct.pack('<L', data_offset)
         info.append(nfo)
         raw_data = get_icon(pe_file, icon_rsrcs, -grp_icon.ID)
-        if not raw_data: continue
+        if not raw_data:
+            continue
         data.append(raw_data)
         data_offset += len(raw_data)
 
@@ -78,14 +83,13 @@ def icon_export_raw(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData,
     return raw
 
 
-def icon_export(pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int = None) -> Optional[Image.Image]:
+def icon_export(
+        pe_file: pefile.PE, icon_rsrcs: pefile.ResourceDirEntryData, entries: list, idx: int = None) -> Optional[
+        Image.Image]:
     if icon_rsrcs is None:
         return None
     raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
     try:
         return Image.open(BytesIO(raw))
-    except ValueError:
+    except (ValueError, OSError):
         return None
-
-
-
