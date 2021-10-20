@@ -91,5 +91,5 @@ def icon_export(
     raw = icon_export_raw(pe_file, icon_rsrcs, entries, idx)
     try:
         return Image.open(BytesIO(raw))
-    except ValueError:
+    except (ValueError, OSError):
         return None
