@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y git
 USER assemblyline
 
 # Install python dependancies
-RUN pip install --no-cache-dir --user pefile pillow signify==0.3.0 pathlib2 ssdeep && rm -rf ~/.cache/pip
+RUN pip install --no-cache-dir --user pefile pillow signify>=0.4.0 pathlib2 ssdeep && rm -rf ~/.cache/pip
 
 # Install APIScout dependancy from source
 RUN pip install --no-cache-dir --user git+https://github.com/danielplohmann/apiscout.git && rm -rf ~/.cache/pip

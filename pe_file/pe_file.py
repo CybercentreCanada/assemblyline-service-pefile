@@ -17,7 +17,9 @@ from assemblyline.common.hexdump import hexdump
 from assemblyline.common.str_utils import safe_str, translate_str
 from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
-from signify import signed_pe, authenticode, context
+from signify.authenticode import TRUSTED_CERTIFICATE_STORE
+from signify.authenticode.signed_pe import SignedPEFile
+from signify.x509 import FileSystemCertificateStore
 from signify.exceptions import SignedPEParseError, AuthenticodeVerificationError, \
     VerificationError, ParseError, SignerInfoParseError
 
@@ -52,8 +54,7 @@ class PEFile(ServiceBase):
         for cert_path in more_trusted_certs:
             p = pathlib.Path(cert_path)
             if p.exists():
-                authenticode.TRUSTED_CERTIFICATE_STORE.extend(
-                    context.FileSystemCertificateStore(location=p, trusted=True))
+                TRUSTED_CERTIFICATE_STORE.extend(FileSystemCertificateStore(location=p, trusted=True))
             else:
                 self.log.error(
                     "%s was given as an additional path for trusted certs, but it doesn't appear to exist" % cert_path)
@@ -747,7 +748,7 @@ class PEFile(ServiceBase):
             # first, let's try parsing the file
             # noinspection PyBroadException
             try:
-                s_data = signed_pe.SignedPEFile(file_handle)
+                s_data = SignedPEFile(file_handle)
             except Exception:
                 self.log.error("Error parsing. May not be a valid PE? Traceback: %s" % traceback.format_exc())
                 return
