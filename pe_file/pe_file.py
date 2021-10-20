@@ -12,11 +12,12 @@ import chardet
 import pathlib2 as pathlib
 import pefile
 from apiscout import ApiVector
+from assemblyline.common.identify import fileinfo
 from assemblyline.common.entropy import calculate_partition_entropy
 from assemblyline.common.hexdump import hexdump
 from assemblyline.common.str_utils import safe_str, translate_str
 from assemblyline_v4_service.common.base import ServiceBase
-from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic
+from assemblyline_v4_service.common.result import Result, ResultSection, BODY_FORMAT, Heuristic, ResultImageSection
 from signify.authenticode import TRUSTED_CERTIFICATE_STORE
 from signify.authenticode.signed_pe import SignedPEFile
 from signify.x509 import FileSystemCertificateStore
@@ -705,8 +706,14 @@ class PEFile(ServiceBase):
             self.get_signature_information(BytesIO(file_content))
             self.get_api_vector()
 
+            image_section = ResultImageSection(self.request, 'Image/Icon(s) Extracted from Sample')
             for path, name, desc in supplementary_files:
-                request.add_supplementary(path, name, desc)
+                if 'image' in fileinfo(path).get('type', ''):
+                    image_section.add_image(path, name, desc)
+                else:
+                    request.add_supplementary(path, name, desc)
+            if len(image_section.body) > 0:
+                self.file_res.add_section(image_section)
 
     def get_api_vector(self):
         # We need to do a bit of manipulation on the list of API calls to normalize to
