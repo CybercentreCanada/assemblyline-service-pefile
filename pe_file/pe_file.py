@@ -707,11 +707,8 @@ class PEFile(ServiceBase):
             self.get_api_vector()
 
             image_section = ResultImageSection(self.request, 'Image/Icon(s) Extracted from Sample')
-            for path, name, desc in supplementary_files:
-                if 'image' in fileinfo(path).get('type', ''):
-                    image_section.add_image(path, name, desc)
-                else:
-                    request.add_supplementary(path, name, desc)
+            [image_section.add_image(path, name, desc) for path, name, desc in supplementary_files]
+
             if len(image_section.body) > 0:
                 self.file_res.add_section(image_section)
 
