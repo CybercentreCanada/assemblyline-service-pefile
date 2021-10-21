@@ -74,7 +74,7 @@ class PEFile(ServiceBase):
         return self.pe_file.get_imphash()
 
     # noinspection PyPep8Naming
-    def get_pe_info(self, lcid, supplementary_files):
+    def get_pe_info(self, lcid):
         """Dumps the PE header as Results in the FileResult."""
 
         # PE Header
@@ -262,7 +262,6 @@ class PEFile(ServiceBase):
         try:
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
                 pe_resource_res = ResultSection("PE: RESOURCES")
-                self.file_res.add_section(pe_resource_res)
                 icon_groups = list()
                 icon_rsrcs = None
 
@@ -320,6 +319,7 @@ class PEFile(ServiceBase):
                             pe_resource_res.add_line(line)
 
                 # export icons
+                image_section = ResultImageSection(self.request, "Exported Icons")
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
@@ -330,7 +330,12 @@ class PEFile(ServiceBase):
                         name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
                         path = os.path.join(self.working_directory, name)
                         icon_export.save(path)
-                        supplementary_files.append((path, name, 'Extracted RT_ICON'))
+                        image_section.add_image(path, name, 'Extracted RT_ICON')
+
+                if image_section.body:
+                    pe_resource_res.add_subsection(image_section)
+
+                self.file_res.add_section(pe_resource_res)
 
         except AttributeError:
             pass
@@ -363,14 +368,15 @@ class PEFile(ServiceBase):
                                     pe_resource_verinfo_res.add_line(f'LangId: {lang_id} is invalid')
 
                             for entry in file_info_type.StringTable[0].entries.items():
-                                txt = f'{entry[0]}: {entry[1]}'
-                                if entry[0].decode() == 'OriginalFilename':
-                                    filename = entry[1].decode()
+                                entry_0, entry_1 = entry[0].decode(), entry[1].decode()
+                                txt = f'{entry_0}: {entry_1}'
+                                if entry_0 == 'OriginalFilename':
+                                    filename = entry_1
                                     pe_resource_verinfo_res.add_tag('file.pe.versions.filename', entry[1])
                                     pe_header_res.add_line(f"Original Filename: {filename}")
                                     pe_header_res.add_tag("file.pe.versions.filename", filename)
-                                elif entry[0].decode() == 'FileDescription':
-                                    file_desc = entry[1].decode()
+                                elif entry_0 == 'FileDescription':
+                                    file_desc = entry_1
                                     if file_desc:
                                         pe_header_res.add_tag("file.pe.versions.description", file_desc)
                                         pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
@@ -700,17 +706,10 @@ class PEFile(ServiceBase):
             self.log.debug(e)
 
         if self.pe_file is not None:
-            supplementary_files = []
             self.get_export_module_name()
-            self.get_pe_info(G_LCID, supplementary_files)
+            self.get_pe_info(G_LCID)
             self.get_signature_information(BytesIO(file_content))
             self.get_api_vector()
-
-            image_section = ResultImageSection(self.request, 'Image/Icon(s) Extracted from Sample')
-            [image_section.add_image(path, name, desc) for path, name, desc in supplementary_files]
-
-            if len(image_section.body) > 0:
-                self.file_res.add_section(image_section)
 
     def get_api_vector(self):
         # We need to do a bit of manipulation on the list of API calls to normalize to
