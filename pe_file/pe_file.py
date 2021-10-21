@@ -368,14 +368,15 @@ class PEFile(ServiceBase):
                                     pe_resource_verinfo_res.add_line(f'LangId: {lang_id} is invalid')
 
                             for entry in file_info_type.StringTable[0].entries.items():
-                                txt = f'{entry[0]}: {entry[1]}'
-                                if entry[0].decode() == 'OriginalFilename':
-                                    filename = entry[1].decode()
+                                entry_0, entry_1 = entry[0].decode(), entry[1].decode()
+                                txt = f'{entry_0}: {entry_1}'
+                                if entry_0 == 'OriginalFilename':
+                                    filename = entry_1
                                     pe_resource_verinfo_res.add_tag('file.pe.versions.filename', entry[1])
                                     pe_header_res.add_line(f"Original Filename: {filename}")
                                     pe_header_res.add_tag("file.pe.versions.filename", filename)
-                                elif entry[0].decode() == 'FileDescription':
-                                    file_desc = entry[1].decode()
+                                elif entry_0 == 'FileDescription':
+                                    file_desc = entry_1
                                     if file_desc:
                                         pe_header_res.add_tag("file.pe.versions.description", file_desc)
                                         pe_resource_verinfo_res.add_tag('file.pe.versions.description', file_desc)
