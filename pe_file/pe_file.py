@@ -320,7 +320,7 @@ class PEFile(ServiceBase):
                             pe_resource_res.add_line(line)
 
                 # export icons
-                image_section = ResultImageSection(self.request, "Exported Icons")
+                image_section = ResultImageSection(self.request, "Exported Icons", parent=pe_resource_res)
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
