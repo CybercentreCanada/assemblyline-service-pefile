@@ -262,7 +262,6 @@ class PEFile(ServiceBase):
         try:
             if len(self.pe_file.DIRECTORY_ENTRY_RESOURCE.entries) > 0:
                 pe_resource_res = ResultSection("PE: RESOURCES")
-                self.file_res.add_section(pe_resource_res)
                 icon_groups = list()
                 icon_rsrcs = None
 
@@ -320,7 +319,7 @@ class PEFile(ServiceBase):
                             pe_resource_res.add_line(line)
 
                 # export icons
-                image_section = ResultImageSection(self.request, "Exported Icons", parent=pe_resource_res)
+                image_section = ResultImageSection(self.request, "Exported Icons")
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
@@ -334,7 +333,9 @@ class PEFile(ServiceBase):
                         image_section.add_image(path, name, 'Extracted RT_ICON')
 
                 if image_section.body:
-                    self.file_res.add_section(image_section)
+                    pe_resource_res.add_subsection(image_section)
+
+                self.file_res.add_section(pe_resource_res)
 
         except AttributeError:
             pass
