@@ -838,12 +838,16 @@ class PEFile(ServiceBase):
                         signer_res.add_lines([f"Subject: {cert.subject.dn}",
                                               f"Valid From: {cert.valid_from.isoformat()}",
                                               f"Valid To: {cert.valid_to.isoformat()}",
-                                              f"Thumbprint: {hashlib.sha1(cert.to_der).hexdigest()}"])
+                                              f"Thumbprint (MD5): {hashlib.md5(cert.to_der).hexdigest()}",
+                                              f"Thumbprint (SHA1): {hashlib.sha1(cert.to_der).hexdigest()}",
+                                              f"Thumbprint (SHA256): {hashlib.sha256(cert.to_der).hexdigest()}"])
 
                         signer_res.add_tag("cert.subject", cert.subject.dn)
                         signer_res.add_tag("cert.valid.start", cert.valid_from.isoformat())
                         signer_res.add_tag("cert.valid.end", cert.valid_to.isoformat())
 
+                        signer_res.add_tag("cert.thumbprint", hashlib.md5(cert.to_der).hexdigest())
+                        signer_res.add_tag("cert.thumbprint", hashlib.sha256(cert.to_der).hexdigest())
                         # The thumbprints generated this way match what VirusTotal reports for 'certificate thumbprints'
                         signer_res.add_tag("cert.thumbprint", hashlib.sha1(cert.to_der).hexdigest())
                         break
@@ -854,7 +858,9 @@ class PEFile(ServiceBase):
                         # probably not worth doing tags for all this info?
                         cert_res.add_lines(["Version: %d" % cert.version,
                                             "Serial No: %d" % cert.serial_number,
-                                            "Thumbprint: %s" % hashlib.sha1(cert.to_der).hexdigest(),
+                                            f"Thumbprint (MD5): {hashlib.md5(cert.to_der).hexdigest()}",
+                                            f"Thumbprint (SHA1): {hashlib.sha1(cert.to_der).hexdigest()}",
+                                            f"Thumbprint (SHA256): {hashlib.sha256(cert.to_der).hexdigest()}",
                                             "Issuer: %s" % cert.issuer.dn,
                                             "Subject: %s" % cert.subject.dn,
                                             "Valid From: %s" % cert.valid_from.isoformat(),
