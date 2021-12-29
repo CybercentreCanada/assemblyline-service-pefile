@@ -28,6 +28,8 @@ from pe_file.LCID import LCID as G_LCID
 from pe_file.pyimpfuzzy import pyimpfuzzy
 import pe_file.icon_extractor as icon_extractor
 
+from PIL.Image import UnidentifiedImageError
+
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
 
@@ -320,6 +322,7 @@ class PEFile(ServiceBase):
 
                 # export icons
                 image_section = ResultImageSection(self.request, "Exported Icons")
+                unknown_images = []
                 for j in range(len(icon_groups)):
                     for i in range(len(icon_groups[j])):
                         icon_export = icon_extractor.icon_export(self.pe_file, icon_rsrcs, icon_groups[j], i)
@@ -330,9 +333,21 @@ class PEFile(ServiceBase):
                         name = 'RT_ICON_GROUP_' + str(j) + '_ICON_' + str(i) + '.ico'
                         path = os.path.join(self.working_directory, name)
                         icon_export.save(path)
-                        image_section.add_image(path, name, 'Extracted RT_ICON')
+                        try:
+                            image_section.add_image(path, name, 'Extracted RT_ICON')
+                        except UnidentifiedImageError:
+                            unknown_images.append(name)
+                            self.request.add_extracted(path, name, 'Extracted supposed RT_ICON')
 
-                if image_section.body:
+                if unknown_images:
+                    image_section.add_subsection(
+                        ResultSection(
+                            title_text="Unidentified 'Exported Icons'", body=unknown_images,
+                            heuristic=Heuristic(11, frequency=len(unknown_images))
+                        )
+                    )
+
+                if image_section.body or image_section.subsections:
                     pe_resource_res.add_subsection(image_section)
 
                 self.file_res.add_section(pe_resource_res)

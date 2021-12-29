@@ -96,6 +96,12 @@ heuristics:
     name: Invalid Signature due to invalid Authenticode Signature version
     score: 500
 
+  - description: >-
+       The extracted RT_ICON from the PE wasn't identified as an image-type by the PIL library
+    filetype: "executable/windows"
+    heur_id: 11
+    name: Extracted RT_ICON is not an image
+    score: 100
 
 docker_config:
   image: ${REGISTRY}cccs/assemblyline-service-pefile:$SERVICE_TAG
