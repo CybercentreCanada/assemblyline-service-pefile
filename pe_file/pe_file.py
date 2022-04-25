@@ -7,6 +7,7 @@ import re
 import time
 import traceback
 from io import StringIO, BytesIO
+from assemblyline_v4_service.common import api
 
 import chardet
 import pathlib2 as pathlib
@@ -337,7 +338,8 @@ class PEFile(ServiceBase):
                             image_section.add_image(path, name, 'Extracted RT_ICON')
                         except UnidentifiedImageError:
                             unknown_images.append(name)
-                            self.request.add_extracted(path, name, 'Extracted supposed RT_ICON')
+                            self.request.add_extracted(path, name, 'Extracted supposed RT_ICON',
+                                                       safelist_interface=self.api_interface)
 
                 if unknown_images:
                     image_section.add_subsection(
