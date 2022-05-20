@@ -7,13 +7,11 @@ import re
 import time
 import traceback
 from io import StringIO, BytesIO
-from assemblyline_v4_service.common import api
 
 import chardet
 import pathlib2 as pathlib
 import pefile
 from apiscout import ApiVector
-from assemblyline.common.identify import fileinfo
 from assemblyline.common.entropy import calculate_partition_entropy
 from assemblyline.common.hexdump import hexdump
 from assemblyline.common.str_utils import safe_str, translate_str
@@ -508,11 +506,13 @@ class PEFile(ServiceBase):
                                         if data[offset:offset + 2] == "\xFF\xFF":
                                             offset += DWORD
                                         else:
-                                            offset += len(self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
+                                            offset += \
+                                                len(self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
                                         if data[offset:offset + 2] == "\xFF\xFF":
                                             offset += DWORD
                                         else:
-                                            offset += len(self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
+                                            offset += \
+                                                len(self.pe_file.get_string_u_at_rva(data_rva + offset)) * 2 + WORD
 
                                         # Get window title
                                         window_title = self.pe_file.get_string_u_at_rva(data_rva + offset)
@@ -806,7 +806,7 @@ class PEFile(ServiceBase):
                 ex = str(e)
                 if ex.startswith("Chain verification from"):
                     # probably self signed, but maybe we just don't have the root CA
-                    def flatten(l): return [item for sublist in l for item in sublist]
+                    def flatten(lst): return [item for sublist in lst for item in sublist]
                     cert_list = flatten([x.certificates for x in s_data.signed_datas])
 
                     # Check to see if all of the issuers are the same. If they are, then this is likely self signed
