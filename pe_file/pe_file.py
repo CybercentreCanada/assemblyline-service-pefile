@@ -6,6 +6,8 @@ import os
 import re
 import time
 import traceback
+import warnings
+
 from io import StringIO, BytesIO
 
 import chardet
@@ -28,6 +30,9 @@ from pe_file.pyimpfuzzy import pyimpfuzzy
 import pe_file.icon_extractor as icon_extractor
 
 from PIL.Image import UnidentifiedImageError
+
+# Ignore logs outside of AL
+warnings.filterwarnings("ignore")
 
 PEFILE_SLACK_LENGTH_TO_DISPLAY = 256
 
