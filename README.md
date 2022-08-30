@@ -1,8 +1,10 @@
+# This module has been deprecated in favor of [PE](https://github.com/CybercentreCanada/assemblyline-service-pe)
+
 # PEFile Service
 
 This Assemblyline service runs the PEFile application against windows executables.
 
-**NOTE**: This service does not require you to buy any licence and is preinstalled and working after a default installation
+**NOTE**: This service does not require you to buy any licence
 
 ## Execution
 
@@ -36,4 +38,3 @@ This services attempts to extract PE headers and provides the following informat
     - Done using [signify](https://signify.readthedocs.io/en/latest/)
     - Extracted to AL tags cert.* (only the certificate information for the signing certificate)
 - [API Vector](http://byte-atlas.blogspot.com/2018/04/apivectors.html) extraction
-
